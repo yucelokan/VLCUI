@@ -1,12 +1,5 @@
 import Foundation
-
-#if os(macOS)
-import VLCKit
-#elseif os(tvOS)
-import TVVLCKit
-#else
-import MobileVLCKit
-#endif
+import VLCKitSPM
 
 public extension VLCVideoPlayer {
 

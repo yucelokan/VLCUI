@@ -17,11 +17,15 @@ let package = Package(
         ),
     ],
     dependencies: [
+        // Dependencies declare other packages that this package depends on.
+        .package(url: "https://github.com/yucelokan/vlckit-spm.git", branch: "main")
     ],
     targets: [
         .target(
             name: "VLCUI",
-            dependencies: []
+            dependencies: [
+                .product(name: "VLCKitSPM", package: "vlckit-spm")
+            ]
         ),
     ]
 )
