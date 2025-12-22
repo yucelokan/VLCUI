@@ -36,6 +36,8 @@ public class UIVLCVideoPlayerView: _PlatformView {
     private var lastAspectFill: Float = 0
     private var lastPlayerTicks: Int32 = 0
     private var lastPlayerState: VLCMediaPlayerState = .opening
+    private var lastTimeUpdate: Date = .distantPast
+    private let timeUpdateThrottle: TimeInterval = 0.05
 
     private var aspectFillScale: CGFloat {
         guard let currentMediaPlayer else { return 1 }
@@ -326,9 +328,16 @@ extension UIVLCVideoPlayerView {
 extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
 
     public func mediaPlayerTimeChanged(_ aNotification: Notification) {
-        let player = aNotification.object as! VLCMediaPlayer
+        // Throttle time updates to prevent dispatch_async crash
+        let now = Date()
+        guard now.timeIntervalSince(lastTimeUpdate) >= timeUpdateThrottle else { return }
+        lastTimeUpdate = now
+        
+        guard let player = aNotification.object as? VLCMediaPlayer,
+              let media = player.media else { return }
+        
         let currentTicks = player.time.intValue
-        let playbackInformation = constructPlaybackInformation(player: player, media: player.media!)
+        let playbackInformation = constructPlaybackInformation(player: player, media: media)
 
         if !hasSetConfiguration {
             setConfigurationValues(
@@ -358,7 +367,7 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         // Replay
         if configuration.replay,
            lastPlayerState == .playing,
-           abs(player.media!.length.intValue - currentTicks) <= 500
+           abs(media.length.intValue - currentTicks) <= 500
         {
             configuration.autoPlay = true
             configuration.startTime = .ticks(0)
@@ -368,11 +377,11 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
 
     // VLCKit 4.0: New delegate signature
     public func mediaPlayerStateChanged(_ newState: VLCMediaPlayerState) {
-        guard let player = currentMediaPlayer else { return }
+        guard let player = currentMediaPlayer, let media = player.media else { return }
         guard newState != .playing, newState != lastPlayerState else { return }
 
         let wrappedState = VLCVideoPlayer.State(rawValue: newState.rawValue) ?? .error
-        let playbackInformation = constructPlaybackInformation(player: player, media: player.media!)
+        let playbackInformation = constructPlaybackInformation(player: player, media: media)
 
         onStateUpdated(wrappedState, playbackInformation)
         lastPlayerState = newState
