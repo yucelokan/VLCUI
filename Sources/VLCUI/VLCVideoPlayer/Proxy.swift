@@ -578,12 +578,6 @@ public extension VLCVideoPlayer {
         private var discoverers: [VLCRendererDiscoverer] = []
         private weak var mediaPlayer: VLCMediaPlayer?
         
-        // MARK: - Renderer Discovery (Chromecast/AirPlay)
-        public let rendererManager = RendererDiscoveryManager()
-        
-        // MARK: - Subtitle Transcoder
-        public let subtitleTranscoder = SubtitleTranscoder()
-        
         public struct RendererInfo: Identifiable, Equatable {
             public let id: String
             public let name: String
