@@ -96,8 +96,16 @@ public class UIVLCVideoPlayerView: _PlatformView {
     }
 
     func setupVLCMediaPlayer(with newConfiguration: VLCVideoPlayer.Configuration) {
+        // CRITICAL: Remove delegate BEFORE stopping to prevent callbacks to deallocated objects
+        currentMediaPlayer?.delegate = nil
         currentMediaPlayer?.stop()
         currentMediaPlayer = nil
+        
+        // Reset PiP state
+        #if os(iOS)
+        pipWindowController = nil
+        isPiPActive = false
+        #endif
 
         // VLCKit 4.0: VLCMedia(url:) returns optional
         guard let media = VLCMedia(url: newConfiguration.url) else {
@@ -106,52 +114,43 @@ public class UIVLCVideoPlayerView: _PlatformView {
         }
         media.addOptions(newConfiguration.options)
 
-        #if os(iOS)
-        // VLCKit 4.0: Use VLCDrawable protocol for native rendering
-        let drawable = VLCPiPDrawableView(containerView: videoContentView, mediaController: self)
-        drawable.onPictureInPictureReady = { [weak self] windowController in
-            self?.pipWindowController = windowController
-            self?.proxy?.isPiPPossible = true
-        }
+        // Create new media player
+        let newMediaPlayer = VLCMediaPlayer()
+        newMediaPlayer.media = media
         
-        let mediaPlayer = VLCMediaPlayer(drawable: drawable)
-        #else
-        let mediaPlayer = VLCMediaPlayer(videoView: videoContentView as! VLCVideoView)
-        #endif
-
-        mediaPlayer.media = media
-        mediaPlayer.delegate = self
-
         #if os(iOS)
-        if let loggingInfo {
-            switch loggingInfo.level {
-            case .debug:
-                mediaPlayer.debugLogging = true
-                mediaPlayer.debugLoggingLevel = 3
-            case .info:
-                mediaPlayer.debugLogging = true
-                mediaPlayer.debugLoggingLevel = 2
-            default:
-                mediaPlayer.debugLogging = false
+        // VLCKit 4.0: Use VLCDrawable protocol for native PiP rendering
+        let pipDrawable = VLCPiPDrawableView(containerView: videoContentView, mediaController: self)
+        pipDrawable.onPictureInPictureReady = { [weak self] windowController in
+            DispatchQueue.main.async {
+                self?.pipWindowController = windowController
+                print("[PiP] VLCKit PiP is ready!")
             }
         }
+        newMediaPlayer.drawable = pipDrawable
+        #else
+        newMediaPlayer.drawable = videoContentView
         #endif
+        
+        // Set delegate AFTER configuring player
+        newMediaPlayer.delegate = self
+
+        for child in newConfiguration.playbackChildren {
+            newMediaPlayer.addPlaybackSlave(child.url, type: child.type.asVLCSlaveType, enforce: child.enforce)
+        }
 
         configuration = newConfiguration
-        currentMediaPlayer = mediaPlayer
-
+        currentMediaPlayer = newMediaPlayer
+        proxy?.mediaPlayer = newMediaPlayer
+        
         hasSetConfiguration = false
+        lastPlayerTicks = 0
         lastPlayerState = .opening
         cachedPlaybackInfo = nil
 
-        if configuration.autoPlay {
-            mediaPlayer.play()
+        if newConfiguration.autoPlay {
+            newMediaPlayer.play()
         }
-
-        // PiP Setup (VLCKit 4.0)
-        #if os(iOS)
-        proxy?.isPiPActive = false
-        #endif
     }
 
     func setAspectFill(with fill: Float) {
@@ -171,17 +170,18 @@ public class UIVLCVideoPlayerView: _PlatformView {
 extension UIVLCVideoPlayerView {
 
     public func startPictureInPicture() {
-        guard let windowController = pipWindowController else { return }
+        guard let windowController = pipWindowController else { 
+            print("[PiP] Cannot start - windowController is nil")
+            return 
+        }
         windowController.startPictureInPicture()
         isPiPActive = true
-        proxy?.isPiPActive = true
     }
 
     public func stopPictureInPicture() {
         guard let windowController = pipWindowController else { return }
         windowController.stopPictureInPicture()
         isPiPActive = false
-        proxy?.isPiPActive = false
     }
     
     public func invalidatePiPPlaybackState() {
@@ -265,6 +265,18 @@ public class VLCPiPDrawableView: NSObject, VLCDrawable, VLCPictureInPictureDrawa
     private weak var containerView: UIView?
     private weak var mediaControllerRef: (any VLCPictureInPictureMediaControlling)?
     
+    // Fallback controller in case weak reference is nil
+    private class FallbackMediaController: NSObject, VLCPictureInPictureMediaControlling {
+        func play() {}
+        func pause() {}
+        func seek(by offset: Int64, completion: (() -> Void)!) { completion?() }
+        func mediaLength() -> Int64 { 0 }
+        func mediaTime() -> Int64 { 0 }
+        func isMediaSeekable() -> Bool { false }
+        func isMediaPlaying() -> Bool { false }
+    }
+    private let fallbackController = FallbackMediaController()
+    
     public var onPictureInPictureReady: ((any VLCPictureInPictureWindowControlling) -> Void)?
     
     init(containerView: UIView, mediaController: any VLCPictureInPictureMediaControlling) {
@@ -275,9 +287,10 @@ public class VLCPiPDrawableView: NSObject, VLCDrawable, VLCPictureInPictureDrawa
     
     // VLCDrawable protocol
     public func addSubview(_ view: UIView) {
-        containerView?.addSubview(view)
-        view.translatesAutoresizingMaskIntoConstraints = false
-        if let containerView = containerView {
+        DispatchQueue.main.async { [weak self] in
+            guard let containerView = self?.containerView else { return }
+            containerView.addSubview(view)
+            view.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
                 view.topAnchor.constraint(equalTo: containerView.topAnchor),
                 view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
@@ -291,9 +304,9 @@ public class VLCPiPDrawableView: NSObject, VLCDrawable, VLCPictureInPictureDrawa
         return containerView?.bounds ?? .zero
     }
     
-    // VLCPictureInPictureDrawable protocol
+    // VLCPictureInPictureDrawable protocol - SAFE: Never returns nil
     public func mediaController() -> any VLCPictureInPictureMediaControlling {
-        return mediaControllerRef!
+        return mediaControllerRef ?? fallbackController
     }
     
     public func pictureInPictureReady() -> ((any VLCPictureInPictureWindowControlling)?) -> Void {
@@ -369,10 +382,17 @@ extension UIVLCVideoPlayerView {
         guard now.timeIntervalSince(lastTrackUpdateTime) >= trackUpdateInterval else { return }
         lastTrackUpdateTime = now
         
+        // Capture current player reference to verify in async block
+        let capturedPlayer = player
+        
         // Fetch track info on background queue to avoid blocking
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             
+            // SAFETY: Verify the player is still our current player before accessing tracks
+            guard self.currentMediaPlayer === capturedPlayer else { return }
+            
+            // Safely access track information
             let subtitleTracks = player.textTracks.map { track in
                 MediaTrack(index: Int(track.identifier), title: track.trackName)
             }
@@ -402,7 +422,8 @@ extension UIVLCVideoPlayerView {
                 audioTracks: audioTracks
             )
             
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.currentMediaPlayer === capturedPlayer else { return }
                 self.cachedPlaybackInfo = info
             }
         }
@@ -419,7 +440,9 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         guard now.timeIntervalSince(lastTimeUpdate) >= timeUpdateThrottle else { return }
         lastTimeUpdate = now
         
+        // SAFETY: Verify the notification is from our current player
         guard let player = aNotification.object as? VLCMediaPlayer,
+              player === currentMediaPlayer,
               let media = player.media else { return }
         
         let currentTicks = player.time.intValue
@@ -438,9 +461,10 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
             hasSetConfiguration = true
         }
         
-        // Always send ticks update for UI
+        // Always send ticks update for UI on main thread
         DispatchQueue.main.async { [weak self] in
-            self?.onTicksUpdated(currentTicks.asInt, playbackInformation)
+            guard let self = self, self.currentMediaPlayer === player else { return }
+            self.onTicksUpdated(currentTicks.asInt, playbackInformation)
         }
         
         // Invalidate PiP state when time changes
@@ -453,7 +477,7 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
            abs(currentTicks - lastPlayerTicks) >= 200
         {
             DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
+                guard let self = self, self.currentMediaPlayer === player else { return }
                 self.onStateUpdated(.playing, playbackInformation)
             }
             lastPlayerState = .playing
@@ -473,20 +497,28 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
 
     // VLCKit 4.0: New delegate signature
     public func mediaPlayerStateChanged(_ newState: VLCMediaPlayerState) {
+        // SAFETY: Verify we still have a valid player
         guard let player = currentMediaPlayer, let media = player.media else { return }
         guard newState != lastPlayerState else { return }
+        
+        // Capture current player reference to verify in async block
+        let capturedPlayer = player
         
         // Force update cached track info on state change
         lastTrackUpdateTime = .distantPast
         
-        // For state changes, we need full track info - do it safely
+        // For state changes, we need full track info - do it safely on background
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
+            
+            // SAFETY: Verify the player is still our current player
+            guard self.currentMediaPlayer === capturedPlayer else { return }
             
             let playbackInformation = self.constructFullPlaybackInformation(player: player, media: media)
             let wrappedState = VLCVideoPlayer.State(rawValue: newState.rawValue) ?? .error
             
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.currentMediaPlayer === capturedPlayer else { return }
                 self.cachedPlaybackInfo = playbackInformation
                 self.onStateUpdated(wrappedState, playbackInformation)
                 self.lastPlayerState = newState
