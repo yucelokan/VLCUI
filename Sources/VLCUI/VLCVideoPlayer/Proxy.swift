@@ -613,7 +613,10 @@ public extension VLCVideoPlayer {
         /// Start discovering available renderers (Chromecast, etc.)
         public func startDiscovery() {
             // Can start discovery without a player configured
-            guard !isDiscovering else { return }
+            guard !isDiscovering else { 
+                print("[Renderer] Already discovering")
+                return 
+            }
             
             // Get available discoverer descriptions
             guard let descriptions = VLCRendererDiscoverer.list(), !descriptions.isEmpty else {
@@ -621,10 +624,18 @@ public extension VLCVideoPlayer {
                 return
             }
             
-            DispatchQueue.main.async { [weak self] in
-                self?.isDiscovering = true
-                self?.availableRenderers = []
+            // Set state immediately (synchronously if on main thread, async otherwise)
+            if Thread.isMainThread {
+                isDiscovering = true
+                availableRenderers = []
+            } else {
+                DispatchQueue.main.sync {
+                    self.isDiscovering = true
+                    self.availableRenderers = []
+                }
             }
+            
+            print("[Renderer] Starting discovery with \(descriptions.count) discoverers")
             
             for description in descriptions {
                 if let discoverer = VLCRendererDiscoverer(name: description.name) {
@@ -639,6 +650,8 @@ public extension VLCVideoPlayer {
         
         /// Stop renderer discovery - call this explicitly before releasing the manager
         public func stopDiscovery() {
+            print("[Renderer] Stopping discovery")
+            
             // Remove delegates first to prevent callbacks
             for discoverer in discoverers {
                 discoverer.delegate = nil
@@ -646,8 +659,13 @@ public extension VLCVideoPlayer {
             }
             discoverers.removeAll()
             
-            DispatchQueue.main.async { [weak self] in
-                self?.isDiscovering = false
+            // Update state
+            if Thread.isMainThread {
+                isDiscovering = false
+            } else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.isDiscovering = false
+                }
             }
         }
         
