@@ -1,4 +1,4 @@
-import VLCKitSPM
+import VLCKit
 
 extension VLCVideoPlayer {
 

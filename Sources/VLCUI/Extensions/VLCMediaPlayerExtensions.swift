@@ -4,7 +4,7 @@ import AppKit
 import UIKit
 #endif
 
-import VLCKitSPM
+import VLCKit
 
 extension VLCMediaPlayer {
 
@@ -62,25 +62,39 @@ extension VLCMediaPlayer {
         #endif
     }
 
+    // VLCKit 4.0: Use textTracks instead of videoSubTitlesIndexes
     func subtitleTrackIndex(from track: VLCVideoPlayer.ValueSelector<Int>) -> Int {
-        guard let indexes = videoSubTitlesIndexes as? [Int] else { return -1 }
-
+        let textTracks = self.textTracks
+        guard !textTracks.isEmpty else { return -1 }
+        
         switch track {
         case .auto:
-            return indexes.first(where: { $0 != -1 }) ?? -1
+            // Return the first available text track index
+            return Int(textTracks.first?.identifier ?? -1)
         case let .absolute(index):
-            return indexes.contains(index) ? index : -1
+            // Check if the requested index exists
+            if textTracks.contains(where: { Int($0.identifier) == index }) {
+                return index
+            }
+            return -1
         }
     }
 
+    // VLCKit 4.0: Use audioTracks
     func audioTrackIndex(from track: VLCVideoPlayer.ValueSelector<Int>) -> Int {
-        guard let indexes = audioTrackIndexes as? [Int] else { return -1 }
-
+        let audioTracks = self.audioTracks
+        guard !audioTracks.isEmpty else { return -1 }
+        
         switch track {
         case .auto:
-            return indexes.first(where: { $0 != -1 }) ?? -1
+            // Return the first available audio track index
+            return Int(audioTracks.first?.identifier ?? -1)
         case let .absolute(index):
-            return indexes.contains(index) ? index : -1
+            // Check if the requested index exists
+            if audioTracks.contains(where: { Int($0.identifier) == index }) {
+                return index
+            }
+            return -1
         }
     }
 
@@ -91,5 +105,37 @@ extension VLCMediaPlayer {
         case let .absolute(speed):
             return speed
         }
+    }
+    
+    // VLCKit 4.0: Select text track by index
+    func selectTextTrack(at index: Int) {
+        for track in textTracks {
+            if Int(track.identifier) == index {
+                track.isSelected = true
+            } else {
+                track.isSelected = false
+            }
+        }
+    }
+    
+    // VLCKit 4.0: Select audio track by index
+    func selectAudioTrack(at index: Int) {
+        for track in audioTracks {
+            if Int(track.identifier) == index {
+                track.isSelected = true
+            } else {
+                track.isSelected = false
+            }
+        }
+    }
+    
+    // VLCKit 4.0: Get currently selected text track
+    var currentTextTrackIndex: Int {
+        return Int(textTracks.first(where: { $0.isSelected })?.identifier ?? -1)
+    }
+    
+    // VLCKit 4.0: Get currently selected audio track
+    var currentAudioTrackIdx: Int {
+        return Int(audioTracks.first(where: { $0.isSelected })?.identifier ?? -1)
     }
 }
