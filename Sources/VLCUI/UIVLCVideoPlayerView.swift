@@ -400,18 +400,23 @@ extension UIVLCVideoPlayerView {
         )
     }
     
-    /// Constructs lightweight playback info using cached track data - safe for frequent calls
-    private func constructLightweightPlaybackInformation(player: VLCMediaPlayer, media: VLCMedia) -> VLCVideoPlayer.PlaybackInformation {
+    /// Constructs lightweight playback info using ONLY cached data - SAFE for VLC callbacks
+    /// IMPORTANT: Do NOT access any VLCMediaPlayer properties here - causes lock assertion failures
+    private func constructLightweightPlaybackInformation(currentTicks: Int32, media: VLCMedia) -> VLCVideoPlayer.PlaybackInformation {
         // Use cached track info if available, otherwise create empty
         let cached = cachedPlaybackInfo
+        let length = media.length.intValue.asInt
+        
+        // Calculate position from ticks and length (avoid player.position access)
+        let position: Float = length > 0 ? Float(currentTicks) / Float(length) : 0
         
         return VLCVideoPlayer.PlaybackInformation(
             startConfiguration: configuration,
-            position: Float(player.position),
-            length: media.length.intValue.asInt,
-            isSeekable: player.isSeekable,
-            playbackRate: player.rate,
-            videoSize: player.videoSize,
+            position: position,
+            length: length,
+            isSeekable: cached?.isSeekable ?? true,
+            playbackRate: cached?.playbackRate ?? 1.0,
+            videoSize: cached?.videoSize ?? .zero,
             currentSubtitleTrack: cached?.currentSubtitleTrack ?? MediaTrack(index: -1, title: "Disable"),
             currentAudioTrack: cached?.currentAudioTrack ?? MediaTrack(index: -1, title: "Default"),
             subtitleTracks: cached?.subtitleTracks ?? [],
@@ -419,8 +424,8 @@ extension UIVLCVideoPlayerView {
         )
     }
     
-    /// Updates cached track information - call periodically or on state change
-    private func updateCachedTrackInfo(player: VLCMediaPlayer, media: VLCMedia) {
+    /// Schedules a track info update - call from time callback (does not block)
+    private func scheduleTrackInfoUpdate(player: VLCMediaPlayer, media: VLCMedia) {
         // Skip if cleaning up
         guard !isCleaningUp else { return }
         
@@ -431,51 +436,63 @@ extension UIVLCVideoPlayerView {
         // Capture current player reference to verify in async block
         let capturedPlayer = player
         
-        // Fetch track info on background queue to avoid blocking
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // Fetch track info on background queue - OUTSIDE of VLC callback context
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) { [weak self] in
             guard let self = self,
                   !self.isCleaningUp,
                   self.currentMediaPlayer === capturedPlayer else { return }
             
-            // Safely access track information with checks
-            let textTracks = player.textTracks
-            let audioTracksArray = player.audioTracks
-            
-            let subtitleTracks = textTracks.map { track in
-                MediaTrack(index: Int(track.identifier), title: track.trackName)
-            }
-            
-            let audioTracks = audioTracksArray.map { track in
-                MediaTrack(index: Int(track.identifier), title: track.trackName)
-            }
-            
-            let currentSubtitleTrack: MediaTrack = subtitleTracks
-                .first(where: { $0.index == player.currentTextTrackIndex })
-                ?? MediaTrack(index: -1, title: "Disable")
-            
-            let currentAudioTrack: MediaTrack = audioTracks
-                .first(where: { $0.index == player.currentAudioTrackIdx })
-                ?? MediaTrack(index: -1, title: "Disable")
-            
-            let info = VLCVideoPlayer.PlaybackInformation(
-                startConfiguration: self.configuration,
-                position: Float(player.position),
-                length: media.length.intValue.asInt,
-                isSeekable: player.isSeekable,
-                playbackRate: player.rate,
-                videoSize: player.videoSize,
-                currentSubtitleTrack: currentSubtitleTrack,
-                currentAudioTrack: currentAudioTrack,
-                subtitleTracks: subtitleTracks,
-                audioTracks: audioTracks
-            )
-            
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self,
-                      !self.isCleaningUp,
-                      self.currentMediaPlayer === capturedPlayer else { return }
-                self.cachedPlaybackInfo = info
-            }
+            self.fetchAndCacheTrackInfo(player: capturedPlayer, media: media)
+        }
+    }
+    
+    /// Fetches track info from player - call ONLY from background queue, NEVER from VLC callbacks
+    private func fetchAndCacheTrackInfo(player: VLCMediaPlayer, media: VLCMedia) {
+        // Safely access track information
+        let textTracks = player.textTracks
+        let audioTracksArray = player.audioTracks
+        
+        let subtitleTracks = textTracks.map { track in
+            MediaTrack(index: Int(track.identifier), title: track.trackName)
+        }
+        
+        let audioTracks = audioTracksArray.map { track in
+            MediaTrack(index: Int(track.identifier), title: track.trackName)
+        }
+        
+        let currentSubtitleTrack: MediaTrack = subtitleTracks
+            .first(where: { $0.index == player.currentTextTrackIndex })
+            ?? MediaTrack(index: -1, title: "Disable")
+        
+        let currentAudioTrack: MediaTrack = audioTracks
+            .first(where: { $0.index == player.currentAudioTrackIdx })
+            ?? MediaTrack(index: -1, title: "Disable")
+        
+        // These properties are safe to access from background
+        let position = Float(player.position)
+        let length = media.length.intValue.asInt
+        let isSeekable = player.isSeekable
+        let rate = player.rate
+        let videoSize = player.videoSize
+        
+        let info = VLCVideoPlayer.PlaybackInformation(
+            startConfiguration: self.configuration,
+            position: position,
+            length: length,
+            isSeekable: isSeekable,
+            playbackRate: rate,
+            videoSize: videoSize,
+            currentSubtitleTrack: currentSubtitleTrack,
+            currentAudioTrack: currentAudioTrack,
+            subtitleTracks: subtitleTracks,
+            audioTracks: audioTracks
+        )
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self,
+                  !self.isCleaningUp,
+                  self.currentMediaPlayer === player else { return }
+            self.cachedPlaybackInfo = info
         }
     }
 }
@@ -498,20 +515,22 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
               player === currentMediaPlayer,
               let media = player.media else { return }
         
+        // IMPORTANT: Only access player.time here - other properties can cause lock issues
         let currentTicks = player.time.intValue
         
-        // Update cached track info periodically (non-blocking)
-        updateCachedTrackInfo(player: player, media: media)
+        // Schedule track info update on background queue (not inside this callback)
+        scheduleTrackInfoUpdate(player: player, media: media)
         
-        // Use lightweight playback info for time updates
-        let playbackInformation = constructLightweightPlaybackInformation(player: player, media: media)
+        // Use lightweight playback info - NO player property access inside
+        let playbackInformation = constructLightweightPlaybackInformation(currentTicks: currentTicks, media: media)
 
         if !hasSetConfiguration {
-            setConfigurationValues(
-                with: player,
-                from: configuration
-            )
-            hasSetConfiguration = true
+            // Defer configuration to avoid lock issues
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.currentMediaPlayer === player else { return }
+                self.setConfigurationValues(with: player, from: self.configuration)
+                self.hasSetConfiguration = true
+            }
         }
         
         // Always send ticks update for UI on main thread
@@ -524,7 +543,9 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         
         // Invalidate PiP state when time changes
         #if os(iOS)
-        invalidatePiPPlaybackState()
+        DispatchQueue.main.async { [weak self] in
+            self?.invalidatePiPPlaybackState()
+        }
         #endif
 
         // Set playing state - do this synchronously to avoid race conditions
@@ -568,31 +589,45 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         
         // Capture current player reference to verify in async block
         let capturedPlayer = player
+        let wrappedState = VLCVideoPlayer.State(rawValue: newState.rawValue) ?? .error
         
         // Force update cached track info on state change
         lastTrackUpdateTime = .distantPast
         
-        // For state changes, we need full track info - do it safely on background
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // Get current lightweight info using ONLY cached data - no VLC property access
+        let currentTime = player.time.intValue
+        let lightweightInfo = constructLightweightPlaybackInformation(currentTicks: currentTime, media: media)
+        
+        // Send state update immediately with cached info
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self,
+                  !self.isCleaningUp,
+                  self.currentMediaPlayer === capturedPlayer else { return }
+            self.onStateUpdated(wrappedState, lightweightInfo)
+        }
+        
+        // Schedule full track info update - this will run OUTSIDE VLC callback context
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.1) { [weak self] in
             guard let self = self,
                   !self.isCleaningUp,
                   self.currentMediaPlayer === capturedPlayer else { return }
             
             let playbackInformation = self.constructFullPlaybackInformation(player: player, media: media)
-            let wrappedState = VLCVideoPlayer.State(rawValue: newState.rawValue) ?? .error
             
             DispatchQueue.main.async { [weak self] in
                 guard let self = self,
                       !self.isCleaningUp,
                       self.currentMediaPlayer === capturedPlayer else { return }
                 self.cachedPlaybackInfo = playbackInformation
-                self.onStateUpdated(wrappedState, playbackInformation)
             }
         }
         
         // Invalidate PiP state when playback state changes
         #if os(iOS)
-        invalidatePiPPlaybackState()
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, !self.isCleaningUp else { return }
+            self.invalidatePiPPlaybackState()
+        }
         #endif
     }
 
