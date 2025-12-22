@@ -408,13 +408,16 @@ extension UIVLCVideoPlayerView {
         let length = media.length.intValue.asInt
         
         // Calculate position from ticks and length (avoid player.position access)
+        // For live streams, length is 0 or negative - position stays 0
         let position: Float = length > 0 ? Float(currentTicks) / Float(length) : 0
         
+        // Default isSeekable to false for safety (live streams can't seek)
+        // Will be updated when full track info is fetched
         return VLCVideoPlayer.PlaybackInformation(
             startConfiguration: configuration,
             position: position,
             length: length,
-            isSeekable: cached?.isSeekable ?? true,
+            isSeekable: cached?.isSeekable ?? false,
             playbackRate: cached?.playbackRate ?? 1.0,
             videoSize: cached?.videoSize ?? .zero,
             currentSubtitleTrack: cached?.currentSubtitleTrack ?? MediaTrack(index: -1, title: "Disable"),
@@ -437,7 +440,8 @@ extension UIVLCVideoPlayerView {
         let capturedPlayer = player
         
         // Fetch track info on background queue - OUTSIDE of VLC callback context
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        // Use asyncAfter(0) to escape callback without delay
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now()) { [weak self] in
             guard let self = self,
                   !self.isCleaningUp,
                   self.currentMediaPlayer === capturedPlayer else { return }
@@ -606,8 +610,9 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
             self.onStateUpdated(wrappedState, lightweightInfo)
         }
         
-        // Schedule full track info update - this will run OUTSIDE VLC callback context
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.1) { [weak self] in
+        // Schedule full track info update - run immediately but OUTSIDE VLC callback context
+        // Use asyncAfter(0) to escape the callback context without adding delay
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now()) { [weak self] in
             guard let self = self,
                   !self.isCleaningUp,
                   self.currentMediaPlayer === capturedPlayer else { return }
