@@ -17,14 +17,14 @@ let package = Package(
         ),
     ],
     dependencies: [
-        // VLCKit 4.0 SPM package - LOCAL PATH FOR DEVELOPMENT
-        .package(path: "../vlckit-spm-4.0")
+        // VLCKit 4.0 SPM package
+        .package(url: "https://github.com/yucelokan/vlckit-spm.git", branch: "vlckit-4.0")
     ],
     targets: [
         .target(
             name: "VLCUI",
             dependencies: [
-                .product(name: "VLCKitSPM", package: "vlckit-spm-4.0")
+                .product(name: "VLCKitSPM", package: "vlckit-spm")
             ]
         ),
     ]
