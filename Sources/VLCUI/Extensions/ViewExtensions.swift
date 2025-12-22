@@ -10,7 +10,9 @@ extension _PlatformView {
 
     func apply(transform: CGAffineTransform) {
         #if !os(macOS)
-        self.transform = transform
+        DispatchQueue.main.async {
+            self.transform = transform
+        }
         #endif
     }
 
@@ -18,7 +20,9 @@ extension _PlatformView {
         let transform = CGAffineTransform(scaleX: x, y: y)
 
         #if !os(macOS)
-        self.transform = transform
+        DispatchQueue.main.async {
+            self.transform = transform
+        }
         #endif
     }
 }
