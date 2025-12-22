@@ -36,8 +36,15 @@ public class UIVLCVideoPlayerView: _PlatformView {
     private var lastAspectFill: Float = 0
     private var lastPlayerTicks: Int32 = 0
     private var lastPlayerState: VLCMediaPlayerState = .opening
+    
+    // Throttling for time updates
     private var lastTimeUpdate: Date = .distantPast
-    private let timeUpdateThrottle: TimeInterval = 0.05
+    private let timeUpdateThrottle: TimeInterval = 0.1  // 100ms throttle
+    
+    // Cached playback information to avoid VLC lock issues
+    private var cachedPlaybackInfo: VLCVideoPlayer.PlaybackInformation?
+    private var lastTrackUpdateTime: Date = .distantPast
+    private let trackUpdateInterval: TimeInterval = 1.0  // Update tracks every 1 second max
 
     private var aspectFillScale: CGFloat {
         guard let currentMediaPlayer else { return 1 }
@@ -99,84 +106,100 @@ public class UIVLCVideoPlayerView: _PlatformView {
         }
         media.addOptions(newConfiguration.options)
 
-        let newMediaPlayer = VLCMediaPlayer()
-        newMediaPlayer.media = media
-        
-        // VLCKit 4.0 - Set drawable with PiP support
         #if os(iOS)
-        let pipDrawable = VLCPiPDrawableView(
-            containerView: videoContentView,
-            mediaController: self
-        )
-        pipDrawable.onPictureInPictureReady = { [weak self] windowController in
+        // VLCKit 4.0: Use VLCDrawable protocol for native rendering
+        let drawable = VLCPiPDrawableView(containerView: videoContentView, mediaController: self)
+        drawable.onPictureInPictureReady = { [weak self] windowController in
             self?.pipWindowController = windowController
-            print("[PiP] VLCKit PiP is ready!")
+            self?.proxy?.isPiPPossible = true
         }
-        newMediaPlayer.drawable = pipDrawable
-        #else
-        newMediaPlayer.drawable = videoContentView
-        #endif
         
-        newMediaPlayer.delegate = self
+        let mediaPlayer = VLCMediaPlayer(drawable: drawable)
+        #else
+        let mediaPlayer = VLCMediaPlayer(videoView: videoContentView as! VLCVideoView)
+        #endif
 
-        // VLCKit 4.0: Logging API changed - using console logger now
-        // if let loggingInfo {
-        //     Configure logging through VLCConsoleLogger if needed
-        // }
+        mediaPlayer.media = media
+        mediaPlayer.delegate = self
 
-        for child in newConfiguration.playbackChildren {
-            newMediaPlayer.addPlaybackSlave(child.url, type: child.type.asVLCSlaveType, enforce: child.enforce)
+        #if os(iOS)
+        if let loggingInfo {
+            switch loggingInfo.level {
+            case .debug:
+                mediaPlayer.debugLogging = true
+                mediaPlayer.debugLoggingLevel = 3
+            case .info:
+                mediaPlayer.debugLogging = true
+                mediaPlayer.debugLoggingLevel = 2
+            default:
+                mediaPlayer.debugLogging = false
+            }
         }
+        #endif
+
+        configuration = newConfiguration
+        currentMediaPlayer = mediaPlayer
 
         hasSetConfiguration = false
-        configuration = newConfiguration
-        currentMediaPlayer = newMediaPlayer
-        proxy?.mediaPlayer = newMediaPlayer
-        lastPlayerTicks = 0
         lastPlayerState = .opening
+        cachedPlaybackInfo = nil
 
-        if newConfiguration.autoPlay {
-            newMediaPlayer.play()
+        if configuration.autoPlay {
+            mediaPlayer.play()
         }
+
+        // PiP Setup (VLCKit 4.0)
+        #if os(iOS)
+        proxy?.isPiPActive = false
+        #endif
     }
 
-    // MARK: - PiP Control Methods (VLCKit 4.0)
-    
-    #if os(iOS)
-    public func startPictureInPicture() {
-        guard let windowController = pipWindowController else {
-            print("[PiP] PiP not available - windowController is nil")
-            return
+    func setAspectFill(with fill: Float) {
+        lastAspectFill = fill
+
+        if fill != 0 {
+            videoContentView.scale(x: aspectFillScale, y: aspectFillScale)
+        } else {
+            videoContentView.apply(transform: .identity)
         }
+    }
+}
+
+// MARK: - Picture in Picture (VLCKit 4.0)
+
+#if os(iOS)
+extension UIVLCVideoPlayerView {
+
+    public func startPictureInPicture() {
+        guard let windowController = pipWindowController else { return }
         windowController.startPictureInPicture()
         isPiPActive = true
+        proxy?.isPiPActive = true
     }
-    
+
     public func stopPictureInPicture() {
         guard let windowController = pipWindowController else { return }
         windowController.stopPictureInPicture()
         isPiPActive = false
+        proxy?.isPiPActive = false
     }
     
     public func invalidatePiPPlaybackState() {
         pipWindowController?.invalidatePlaybackState()
     }
-    #endif
+}
+#endif
 
-    func setAspectFill(with percentage: Float) {
-        guard percentage >= 0, percentage <= 1 else { return }
-        let scale = 1 + CGFloat(percentage) * (aspectFillScale - 1)
-        videoContentView.scale(x: scale, y: scale)
+// MARK: - Private
 
-        lastAspectFill = percentage
-    }
+private extension UIVLCVideoPlayerView {
 
-    private func makeVideoContentView() -> _PlatformView {
+    func makeVideoContentView() -> _PlatformView {
         let view = _PlatformView(frame: .zero)
         view.translatesAutoresizingMaskIntoConstraints = false
 
         #if os(macOS)
-        view.layer?.backgroundColor = .black
+        view.layer?.backgroundColor = NSColor.black.cgColor
         #else
         view.backgroundColor = .black
         #endif
@@ -283,13 +306,13 @@ public class VLCPiPDrawableView: NSObject, VLCDrawable, VLCPictureInPictureDrawa
 }
 #endif
 
-// MARK: constructPlaybackInformation
+// MARK: - Playback Information Construction
 
 extension UIVLCVideoPlayerView {
 
-    private func constructPlaybackInformation(player: VLCMediaPlayer, media: VLCMedia) -> VLCVideoPlayer.PlaybackInformation {
-
-        // VLCKit 4.0: Use textTracks and audioTracks instead of videoSubTitlesIndexes/audioTrackIndexes
+    /// Constructs playback info with track data - ONLY call from background when safe
+    private func constructFullPlaybackInformation(player: VLCMediaPlayer, media: VLCMedia) -> VLCVideoPlayer.PlaybackInformation {
+        // VLCKit 4.0: Use textTracks and audioTracks
         let subtitleTracks = player.textTracks.map { track in
             MediaTrack(index: Int(track.identifier), title: track.trackName)
         }
@@ -309,7 +332,7 @@ extension UIVLCVideoPlayerView {
 
         return VLCVideoPlayer.PlaybackInformation(
             startConfiguration: configuration,
-            position: Float(player.position),  // VLCKit 4.0: position is Double
+            position: Float(player.position),
             length: media.length.intValue.asInt,
             isSeekable: player.isSeekable,
             playbackRate: player.rate,
@@ -318,8 +341,71 @@ extension UIVLCVideoPlayerView {
             currentAudioTrack: currentAudioTrack,
             subtitleTracks: subtitleTracks,
             audioTracks: audioTracks
-            // VLCKit 4.0: Statistics are now in VLCMediaStats, using defaults
         )
+    }
+    
+    /// Constructs lightweight playback info using cached track data - safe for frequent calls
+    private func constructLightweightPlaybackInformation(player: VLCMediaPlayer, media: VLCMedia) -> VLCVideoPlayer.PlaybackInformation {
+        // Use cached track info if available, otherwise create empty
+        let cached = cachedPlaybackInfo
+        
+        return VLCVideoPlayer.PlaybackInformation(
+            startConfiguration: configuration,
+            position: Float(player.position),
+            length: media.length.intValue.asInt,
+            isSeekable: player.isSeekable,
+            playbackRate: player.rate,
+            videoSize: player.videoSize,
+            currentSubtitleTrack: cached?.currentSubtitleTrack ?? MediaTrack(index: -1, title: "Disable"),
+            currentAudioTrack: cached?.currentAudioTrack ?? MediaTrack(index: -1, title: "Default"),
+            subtitleTracks: cached?.subtitleTracks ?? [],
+            audioTracks: cached?.audioTracks ?? []
+        )
+    }
+    
+    /// Updates cached track information - call periodically or on state change
+    private func updateCachedTrackInfo(player: VLCMediaPlayer, media: VLCMedia) {
+        let now = Date()
+        guard now.timeIntervalSince(lastTrackUpdateTime) >= trackUpdateInterval else { return }
+        lastTrackUpdateTime = now
+        
+        // Fetch track info on background queue to avoid blocking
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            
+            let subtitleTracks = player.textTracks.map { track in
+                MediaTrack(index: Int(track.identifier), title: track.trackName)
+            }
+            
+            let audioTracks = player.audioTracks.map { track in
+                MediaTrack(index: Int(track.identifier), title: track.trackName)
+            }
+            
+            let currentSubtitleTrack: MediaTrack = subtitleTracks
+                .first(where: { $0.index == player.currentTextTrackIndex })
+                ?? MediaTrack(index: -1, title: "Disable")
+            
+            let currentAudioTrack: MediaTrack = audioTracks
+                .first(where: { $0.index == player.currentAudioTrackIdx })
+                ?? MediaTrack(index: -1, title: "Disable")
+            
+            let info = VLCVideoPlayer.PlaybackInformation(
+                startConfiguration: self.configuration,
+                position: Float(player.position),
+                length: media.length.intValue.asInt,
+                isSeekable: player.isSeekable,
+                playbackRate: player.rate,
+                videoSize: player.videoSize,
+                currentSubtitleTrack: currentSubtitleTrack,
+                currentAudioTrack: currentAudioTrack,
+                subtitleTracks: subtitleTracks,
+                audioTracks: audioTracks
+            )
+            
+            DispatchQueue.main.async {
+                self.cachedPlaybackInfo = info
+            }
+        }
     }
 }
 
@@ -328,7 +414,7 @@ extension UIVLCVideoPlayerView {
 extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
 
     public func mediaPlayerTimeChanged(_ aNotification: Notification) {
-        // Throttle time updates to prevent dispatch_async crash
+        // Throttle time updates
         let now = Date()
         guard now.timeIntervalSince(lastTimeUpdate) >= timeUpdateThrottle else { return }
         lastTimeUpdate = now
@@ -337,17 +423,24 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
               let media = player.media else { return }
         
         let currentTicks = player.time.intValue
-        let playbackInformation = constructPlaybackInformation(player: player, media: media)
+        
+        // Update cached track info periodically (non-blocking)
+        updateCachedTrackInfo(player: player, media: media)
+        
+        // Use lightweight playback info for time updates
+        let playbackInformation = constructLightweightPlaybackInformation(player: player, media: media)
 
         if !hasSetConfiguration {
             setConfigurationValues(
                 with: player,
                 from: configuration
             )
-
             hasSetConfiguration = true
-        } else {
-            onTicksUpdated(currentTicks.asInt, playbackInformation)
+        }
+        
+        // Always send ticks update for UI
+        DispatchQueue.main.async { [weak self] in
+            self?.onTicksUpdated(currentTicks.asInt, playbackInformation)
         }
         
         // Invalidate PiP state when time changes
@@ -359,7 +452,10 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         if lastPlayerState != .playing,
            abs(currentTicks - lastPlayerTicks) >= 200
         {
-            onStateUpdated(.playing, playbackInformation)
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.onStateUpdated(.playing, playbackInformation)
+            }
             lastPlayerState = .playing
             lastPlayerTicks = currentTicks
         }
@@ -378,13 +474,24 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
     // VLCKit 4.0: New delegate signature
     public func mediaPlayerStateChanged(_ newState: VLCMediaPlayerState) {
         guard let player = currentMediaPlayer, let media = player.media else { return }
-        guard newState != .playing, newState != lastPlayerState else { return }
-
-        let wrappedState = VLCVideoPlayer.State(rawValue: newState.rawValue) ?? .error
-        let playbackInformation = constructPlaybackInformation(player: player, media: media)
-
-        onStateUpdated(wrappedState, playbackInformation)
-        lastPlayerState = newState
+        guard newState != lastPlayerState else { return }
+        
+        // Force update cached track info on state change
+        lastTrackUpdateTime = .distantPast
+        
+        // For state changes, we need full track info - do it safely
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            
+            let playbackInformation = self.constructFullPlaybackInformation(player: player, media: media)
+            let wrappedState = VLCVideoPlayer.State(rawValue: newState.rawValue) ?? .error
+            
+            DispatchQueue.main.async {
+                self.cachedPlaybackInfo = playbackInformation
+                self.onStateUpdated(wrappedState, playbackInformation)
+                self.lastPlayerState = newState
+            }
+        }
         
         // Invalidate PiP state when playback state changes
         #if os(iOS)
@@ -402,9 +509,14 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         player.fastForward(atRate: defaultPlayerSpeed)
 
         if configuration.aspectFill {
-            videoContentView.scale(x: aspectFillScale, y: aspectFillScale)
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.videoContentView.scale(x: self.aspectFillScale, y: self.aspectFillScale)
+            }
         } else {
-            videoContentView.apply(transform: .identity)
+            DispatchQueue.main.async { [weak self] in
+                self?.videoContentView.apply(transform: .identity)
+            }
         }
 
         // VLCKit 4.0: Use new track selection API
