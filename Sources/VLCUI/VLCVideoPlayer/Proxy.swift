@@ -595,7 +595,13 @@ public extension VLCVideoPlayer {
         }
         
         deinit {
-            stopDiscovery()
+            // Clear delegate references first to prevent callbacks during deallocation
+            for discoverer in discoverers {
+                discoverer.delegate = nil
+            }
+            // Don't call stopDiscovery() in deinit - it can cause threading issues
+            // The discoverers will be released when this object is deallocated
+            discoverers.removeAll()
         }
         
         /// Configure the manager with a media player - must be called before connecting
@@ -631,9 +637,11 @@ public extension VLCVideoPlayer {
             }
         }
         
-        /// Stop renderer discovery
+        /// Stop renderer discovery - call this explicitly before releasing the manager
         public func stopDiscovery() {
+            // Remove delegates first to prevent callbacks
             for discoverer in discoverers {
+                discoverer.delegate = nil
                 discoverer.stop()
             }
             discoverers.removeAll()
