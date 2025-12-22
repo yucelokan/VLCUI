@@ -577,6 +577,7 @@ public extension VLCVideoPlayer {
         
         private var discoverers: [VLCRendererDiscoverer] = []
         private weak var mediaPlayer: VLCMediaPlayer?
+        private var isConfigured: Bool = false
         
         public struct RendererInfo: Identifiable, Equatable {
             public let id: String
@@ -593,27 +594,38 @@ public extension VLCVideoPlayer {
             super.init()
         }
         
-        internal func configure(with mediaPlayer: VLCMediaPlayer?) {
+        deinit {
+            stopDiscovery()
+        }
+        
+        /// Configure the manager with a media player - must be called before connecting
+        public func configure(with mediaPlayer: VLCMediaPlayer?) {
             self.mediaPlayer = mediaPlayer
+            self.isConfigured = mediaPlayer != nil
         }
         
         /// Start discovering available renderers (Chromecast, etc.)
         public func startDiscovery() {
+            // Can start discovery without a player configured
             guard !isDiscovering else { return }
             
             // Get available discoverer descriptions
-            guard let descriptions = VLCRendererDiscoverer.list() else {
+            guard let descriptions = VLCRendererDiscoverer.list(), !descriptions.isEmpty else {
+                print("[Renderer] No renderer discoverers available")
                 return
             }
             
-            isDiscovering = true
-            availableRenderers = []
+            DispatchQueue.main.async { [weak self] in
+                self?.isDiscovering = true
+                self?.availableRenderers = []
+            }
             
             for description in descriptions {
                 if let discoverer = VLCRendererDiscoverer(name: description.name) {
                     discoverer.delegate = self
                     if discoverer.start() {
                         discoverers.append(discoverer)
+                        print("[Renderer] Started discoverer: \(description.longName)")
                     }
                 }
             }
@@ -625,16 +637,28 @@ public extension VLCVideoPlayer {
                 discoverer.stop()
             }
             discoverers.removeAll()
-            isDiscovering = false
+            
+            DispatchQueue.main.async { [weak self] in
+                self?.isDiscovering = false
+            }
         }
         
         /// Connect to a renderer
+        @discardableResult
         public func connect(to renderer: RendererInfo) -> Bool {
-            guard let mediaPlayer = mediaPlayer else { return false }
+            guard let mediaPlayer = mediaPlayer else {
+                print("[Renderer] Cannot connect - mediaPlayer is nil. Call configure() first.")
+                return false
+            }
             
             let success = mediaPlayer.setRendererItem(renderer.rendererItem)
             if success {
-                selectedRenderer = renderer
+                DispatchQueue.main.async { [weak self] in
+                    self?.selectedRenderer = renderer
+                }
+                print("[Renderer] Connected to: \(renderer.name)")
+            } else {
+                print("[Renderer] Failed to connect to: \(renderer.name)")
             }
             return success
         }
@@ -642,12 +666,20 @@ public extension VLCVideoPlayer {
         /// Disconnect from current renderer (play locally)
         public func disconnect() {
             _ = mediaPlayer?.setRendererItem(nil)
-            selectedRenderer = nil
+            DispatchQueue.main.async { [weak self] in
+                self?.selectedRenderer = nil
+            }
+            print("[Renderer] Disconnected")
         }
         
         /// Get available discoverer names (for debugging)
         public var availableDiscovererNames: [String] {
             VLCRendererDiscoverer.list()?.map { $0.longName } ?? []
+        }
+        
+        /// Check if a renderer is currently selected
+        public var isConnected: Bool {
+            selectedRenderer != nil
         }
     }
 }
@@ -656,22 +688,36 @@ extension VLCVideoPlayer.RendererDiscoveryManager: VLCRendererDiscovererDelegate
     
     public func rendererDiscovererItemAdded(_ rendererDiscoverer: VLCRendererDiscoverer, item: VLCRendererItem) {
         DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Check if renderer already exists (avoid duplicates)
+            guard !self.availableRenderers.contains(where: { $0.name == item.name }) else {
+                return
+            }
+            
             let info = VLCVideoPlayer.RendererDiscoveryManager.RendererInfo(
                 id: item.name + "_" + UUID().uuidString,
                 name: item.name,
                 iconURI: item.iconURI,
                 rendererItem: item
             )
-            self?.availableRenderers.append(info)
+            self.availableRenderers.append(info)
+            print("[Renderer] Found: \(item.name)")
         }
     }
     
     public func rendererDiscovererItemDeleted(_ rendererDiscoverer: VLCRendererDiscoverer, item: VLCRendererItem) {
         DispatchQueue.main.async { [weak self] in
-            self?.availableRenderers.removeAll { $0.name == item.name }
-            if self?.selectedRenderer?.name == item.name {
-                self?.selectedRenderer = nil
+            guard let self = self else { return }
+            
+            self.availableRenderers.removeAll { $0.name == item.name }
+            
+            // If the removed renderer was selected, clear selection
+            if self.selectedRenderer?.name == item.name {
+                self.selectedRenderer = nil
+                print("[Renderer] Selected renderer was removed")
             }
+            print("[Renderer] Removed: \(item.name)")
         }
     }
 }

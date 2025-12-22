@@ -7,20 +7,30 @@ import UIKit
 extension CGSize {
 
     static func aspectFill(aspectRatio: CGSize, minimumSize: CGSize) -> CGSize {
-        var minimumSize = minimumSize
+        // Guard against division by zero
+        guard aspectRatio.width > 0, aspectRatio.height > 0 else {
+            return minimumSize
+        }
+        
+        var result = minimumSize
         let widthRatio = minimumSize.width / aspectRatio.width
         let heightRatio = minimumSize.height / aspectRatio.height
 
         if heightRatio > widthRatio {
-            minimumSize.width = minimumSize.height / aspectRatio.height * aspectRatio.width
+            result.width = minimumSize.height / aspectRatio.height * aspectRatio.width
         } else if widthRatio > heightRatio {
-            minimumSize.height = minimumSize.width / aspectRatio.width * aspectRatio.height
+            result.height = minimumSize.width / aspectRatio.width * aspectRatio.height
         }
 
-        return minimumSize
+        return result
     }
 
     func scale(other: CGSize) -> CGFloat {
+        // Guard against division by zero
+        guard other.width > 0, other.height > 0 else {
+            return 1
+        }
+        
         if height > other.height {
             return height / other.height
         } else {

@@ -17,16 +17,20 @@ public class UIVLCVideoPlayerView: _PlatformView {
     private lazy var videoContentView = makeVideoContentView()
     
     private var configuration: VLCVideoPlayer.Configuration
-    private var proxy: VLCVideoPlayer.Proxy?
+    private weak var proxy: VLCVideoPlayer.Proxy?
     private let onTicksUpdated: (Int, VLCVideoPlayer.PlaybackInformation) -> Void
     private let onStateUpdated: (VLCVideoPlayer.State, VLCVideoPlayer.PlaybackInformation) -> Void
     private let loggingInfo: (logger: VLCVideoPlayerLogger, level: VLCVideoPlayer.LoggingLevel)?
     private var currentMediaPlayer: VLCMediaPlayer?
+    
+    // Serial queue for thread-safe state management
+    private let stateQueue = DispatchQueue(label: "com.vlcui.stateQueue", qos: .userInteractive)
 
     // PiP Support (VLCKit 4.0)
     #if os(iOS)
     private var pipWindowController: (any VLCPictureInPictureWindowControlling)?
-    public var isPiPActive: Bool = false
+    private var pipDrawable: VLCPiPDrawableView?
+    public private(set) var isPiPActive: Bool = false
     public var isPiPPossible: Bool {
         return AVPictureInPictureController.isPictureInPictureSupported() && pipWindowController != nil
     }
@@ -36,6 +40,9 @@ public class UIVLCVideoPlayerView: _PlatformView {
     private var lastAspectFill: Float = 0
     private var lastPlayerTicks: Int32 = 0
     private var lastPlayerState: VLCMediaPlayerState = .opening
+    
+    // Flag to prevent callbacks during cleanup
+    private var isCleaningUp: Bool = false
     
     // Throttling for time updates
     private var lastTimeUpdate: Date = .distantPast
@@ -49,6 +56,7 @@ public class UIVLCVideoPlayerView: _PlatformView {
     private var aspectFillScale: CGFloat {
         guard let currentMediaPlayer else { return 1 }
         let videoSize = currentMediaPlayer.videoSize
+        guard videoSize.width > 0 && videoSize.height > 0 else { return 1 }
         let fillSize = CGSize.aspectFill(aspectRatio: videoSize, minimumSize: videoContentView.bounds.size)
         return fillSize.scale(other: videoContentView.bounds.size)
     }
@@ -83,6 +91,32 @@ public class UIVLCVideoPlayerView: _PlatformView {
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
+    
+    deinit {
+        cleanup()
+    }
+    
+    /// Cleanup all resources - call before deallocation
+    private func cleanup() {
+        isCleaningUp = true
+        
+        // Remove delegate first to prevent any callbacks
+        currentMediaPlayer?.delegate = nil
+        
+        // Stop playback
+        currentMediaPlayer?.stop()
+        
+        // Clear PiP
+        #if os(iOS)
+        pipWindowController = nil
+        pipDrawable = nil
+        isPiPActive = false
+        #endif
+        
+        // Clear references
+        currentMediaPlayer = nil
+        cachedPlaybackInfo = nil
+    }
 
     private func setupVideoContentView() {
         addSubview(videoContentView)
@@ -96,7 +130,8 @@ public class UIVLCVideoPlayerView: _PlatformView {
     }
 
     func setupVLCMediaPlayer(with newConfiguration: VLCVideoPlayer.Configuration) {
-        // CRITICAL: Remove delegate BEFORE stopping to prevent callbacks to deallocated objects
+        // CRITICAL: Set cleanup flag and remove delegate BEFORE stopping to prevent callbacks
+        isCleaningUp = true
         currentMediaPlayer?.delegate = nil
         currentMediaPlayer?.stop()
         currentMediaPlayer = nil
@@ -104,12 +139,14 @@ public class UIVLCVideoPlayerView: _PlatformView {
         // Reset PiP state
         #if os(iOS)
         pipWindowController = nil
+        pipDrawable = nil
         isPiPActive = false
         #endif
 
         // VLCKit 4.0: VLCMedia(url:) returns optional
         guard let media = VLCMedia(url: newConfiguration.url) else {
             print("[VLC] Failed to create media from URL: \(newConfiguration.url)")
+            isCleaningUp = false
             return
         }
         media.addOptions(newConfiguration.options)
@@ -120,20 +157,19 @@ public class UIVLCVideoPlayerView: _PlatformView {
         
         #if os(iOS)
         // VLCKit 4.0: Use VLCDrawable protocol for native PiP rendering
-        let pipDrawable = VLCPiPDrawableView(containerView: videoContentView, mediaController: self)
-        pipDrawable.onPictureInPictureReady = { [weak self] windowController in
+        let drawable = VLCPiPDrawableView(containerView: videoContentView, mediaController: self)
+        drawable.onPictureInPictureReady = { [weak self] windowController in
             DispatchQueue.main.async {
-                self?.pipWindowController = windowController
+                guard let self = self, !self.isCleaningUp else { return }
+                self.pipWindowController = windowController
                 print("[PiP] VLCKit PiP is ready!")
             }
         }
-        newMediaPlayer.drawable = pipDrawable
+        self.pipDrawable = drawable
+        newMediaPlayer.drawable = drawable
         #else
         newMediaPlayer.drawable = videoContentView
         #endif
-        
-        // Set delegate AFTER configuring player
-        newMediaPlayer.delegate = self
 
         for child in newConfiguration.playbackChildren {
             newMediaPlayer.addPlaybackSlave(child.url, type: child.type.asVLCSlaveType, enforce: child.enforce)
@@ -143,10 +179,17 @@ public class UIVLCVideoPlayerView: _PlatformView {
         currentMediaPlayer = newMediaPlayer
         proxy?.mediaPlayer = newMediaPlayer
         
+        // Configure renderer manager with the new player
+        proxy?.rendererManager.configure(with: newMediaPlayer)
+        
         hasSetConfiguration = false
         lastPlayerTicks = 0
         lastPlayerState = .opening
         cachedPlaybackInfo = nil
+        
+        // Reset cleanup flag and set delegate AFTER everything is configured
+        isCleaningUp = false
+        newMediaPlayer.delegate = self
 
         if newConfiguration.autoPlay {
             newMediaPlayer.play()
@@ -378,6 +421,9 @@ extension UIVLCVideoPlayerView {
     
     /// Updates cached track information - call periodically or on state change
     private func updateCachedTrackInfo(player: VLCMediaPlayer, media: VLCMedia) {
+        // Skip if cleaning up
+        guard !isCleaningUp else { return }
+        
         let now = Date()
         guard now.timeIntervalSince(lastTrackUpdateTime) >= trackUpdateInterval else { return }
         lastTrackUpdateTime = now
@@ -387,17 +433,19 @@ extension UIVLCVideoPlayerView {
         
         // Fetch track info on background queue to avoid blocking
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
+            guard let self = self,
+                  !self.isCleaningUp,
+                  self.currentMediaPlayer === capturedPlayer else { return }
             
-            // SAFETY: Verify the player is still our current player before accessing tracks
-            guard self.currentMediaPlayer === capturedPlayer else { return }
+            // Safely access track information with checks
+            let textTracks = player.textTracks
+            let audioTracksArray = player.audioTracks
             
-            // Safely access track information
-            let subtitleTracks = player.textTracks.map { track in
+            let subtitleTracks = textTracks.map { track in
                 MediaTrack(index: Int(track.identifier), title: track.trackName)
             }
             
-            let audioTracks = player.audioTracks.map { track in
+            let audioTracks = audioTracksArray.map { track in
                 MediaTrack(index: Int(track.identifier), title: track.trackName)
             }
             
@@ -423,7 +471,9 @@ extension UIVLCVideoPlayerView {
             )
             
             DispatchQueue.main.async { [weak self] in
-                guard let self = self, self.currentMediaPlayer === capturedPlayer else { return }
+                guard let self = self,
+                      !self.isCleaningUp,
+                      self.currentMediaPlayer === capturedPlayer else { return }
                 self.cachedPlaybackInfo = info
             }
         }
@@ -435,6 +485,9 @@ extension UIVLCVideoPlayerView {
 extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
 
     public func mediaPlayerTimeChanged(_ aNotification: Notification) {
+        // Skip if cleaning up
+        guard !isCleaningUp else { return }
+        
         // Throttle time updates
         let now = Date()
         guard now.timeIntervalSince(lastTimeUpdate) >= timeUpdateThrottle else { return }
@@ -463,7 +516,9 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         
         // Always send ticks update for UI on main thread
         DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.currentMediaPlayer === player else { return }
+            guard let self = self, 
+                  !self.isCleaningUp,
+                  self.currentMediaPlayer === player else { return }
             self.onTicksUpdated(currentTicks.asInt, playbackInformation)
         }
         
@@ -472,16 +527,19 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         invalidatePiPPlaybackState()
         #endif
 
-        // Set playing state
+        // Set playing state - do this synchronously to avoid race conditions
         if lastPlayerState != .playing,
            abs(currentTicks - lastPlayerTicks) >= 200
         {
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self, self.currentMediaPlayer === player else { return }
-                self.onStateUpdated(.playing, playbackInformation)
-            }
             lastPlayerState = .playing
             lastPlayerTicks = currentTicks
+            
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self,
+                      !self.isCleaningUp,
+                      self.currentMediaPlayer === player else { return }
+                self.onStateUpdated(.playing, playbackInformation)
+            }
         }
 
         // Replay
@@ -489,17 +547,24 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
            lastPlayerState == .playing,
            abs(media.length.intValue - currentTicks) <= 500
         {
-            configuration.autoPlay = true
-            configuration.startTime = .ticks(0)
-            setupVLCMediaPlayer(with: configuration)
+            var replayConfig = configuration
+            replayConfig.autoPlay = true
+            replayConfig.startTime = .ticks(0)
+            setupVLCMediaPlayer(with: replayConfig)
         }
     }
 
     // VLCKit 4.0: New delegate signature
     public func mediaPlayerStateChanged(_ newState: VLCMediaPlayerState) {
+        // Skip if cleaning up
+        guard !isCleaningUp else { return }
+        
         // SAFETY: Verify we still have a valid player
         guard let player = currentMediaPlayer, let media = player.media else { return }
         guard newState != lastPlayerState else { return }
+        
+        // Update state synchronously to avoid race conditions
+        lastPlayerState = newState
         
         // Capture current player reference to verify in async block
         let capturedPlayer = player
@@ -509,19 +574,19 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         
         // For state changes, we need full track info - do it safely on background
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            
-            // SAFETY: Verify the player is still our current player
-            guard self.currentMediaPlayer === capturedPlayer else { return }
+            guard let self = self,
+                  !self.isCleaningUp,
+                  self.currentMediaPlayer === capturedPlayer else { return }
             
             let playbackInformation = self.constructFullPlaybackInformation(player: player, media: media)
             let wrappedState = VLCVideoPlayer.State(rawValue: newState.rawValue) ?? .error
             
             DispatchQueue.main.async { [weak self] in
-                guard let self = self, self.currentMediaPlayer === capturedPlayer else { return }
+                guard let self = self,
+                      !self.isCleaningUp,
+                      self.currentMediaPlayer === capturedPlayer else { return }
                 self.cachedPlaybackInfo = playbackInformation
                 self.onStateUpdated(wrappedState, playbackInformation)
-                self.lastPlayerState = newState
             }
         }
         
