@@ -30,6 +30,11 @@ public extension VLCVideoPlayer {
             return videoPlayerView?.vlcDrawableView
         }
         #endif
+        
+        /// Returns the current video size from VLC media player
+        public var videoSize: CGSize {
+            return mediaPlayer?.videoSize ?? CGSize(width: 1920, height: 1080)
+        }
 
         /// Play the current media.
         public func play() {
