@@ -35,6 +35,40 @@ public extension VLCVideoPlayer {
         public var videoSize: CGSize {
             return mediaPlayer?.videoSize ?? CGSize(width: 1920, height: 1080)
         }
+        
+        /// Captures a snapshot of the current video frame and returns it as UIImage
+        /// This is useful for PiP frame capture as it bypasses GPU rendering
+        #if !os(macOS)
+        public func captureCurrentFrame() -> UIImage? {
+            guard let mediaPlayer = mediaPlayer else { return nil }
+            
+            let videoSize = mediaPlayer.videoSize
+            guard videoSize.width > 0 && videoSize.height > 0 else { return nil }
+            
+            // Create temp path for snapshot
+            let tempPath = NSTemporaryDirectory() + "vlc_pip_frame.png"
+            
+            // Remove old file if exists
+            try? FileManager.default.removeItem(atPath: tempPath)
+            
+            // Save snapshot
+            mediaPlayer.saveVideoSnapshot(
+                at: tempPath,
+                withWidth: Int32(videoSize.width),
+                andHeight: Int32(videoSize.height)
+            )
+            
+            // Read and return image
+            if let data = try? Data(contentsOf: URL(fileURLWithPath: tempPath)),
+               let image = UIImage(data: data) {
+                // Clean up
+                try? FileManager.default.removeItem(atPath: tempPath)
+                return image
+            }
+            
+            return nil
+        }
+        #endif
 
         /// Play the current media.
         public func play() {
