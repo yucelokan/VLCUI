@@ -11,6 +11,12 @@ import VLCKitSPM
 public class UIVLCVideoPlayerView: _PlatformView {
 
     private lazy var videoContentView = makeVideoContentView()
+    
+    /// Returns the actual video rendering view (VLC's drawable)
+    /// Use this for PiP frame capture instead of the parent view
+    public var vlcDrawableView: _PlatformView {
+        return videoContentView
+    }
 
     private var configuration: VLCVideoPlayer.Configuration
     private var proxy: VLCVideoPlayer.Proxy?

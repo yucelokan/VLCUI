@@ -23,11 +23,11 @@ public extension VLCVideoPlayer {
             self.videoPlayerView = nil
         }
         
-        /// Returns the video content view for PiP setup
-        /// This is the view that VLC renders to
+        /// Returns the actual VLC drawable view for PiP setup
+        /// This is the view that VLC renders video to (not the container)
         #if !os(macOS)
         public var videoContentView: UIView? {
-            return videoPlayerView
+            return videoPlayerView?.vlcDrawableView
         }
         #endif
 
