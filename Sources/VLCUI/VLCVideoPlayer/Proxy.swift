@@ -669,7 +669,9 @@ public extension VLCVideoPlayer {
             }
         }
         
-        /// Connect to a renderer
+        /// Connect to a renderer (Chromecast, AirPlay, etc.)
+        /// VLCKit 4.0: Renderer connection must be done carefully to avoid crashes
+        /// The connection should ideally be done before playback starts, or after stopping
         @discardableResult
         public func connect(to renderer: RendererInfo) -> Bool {
             guard let mediaPlayer = mediaPlayer else {
@@ -677,25 +679,101 @@ public extension VLCVideoPlayer {
                 return false
             }
             
-            let success = mediaPlayer.setRendererItem(renderer.rendererItem)
+            print("[Renderer] Attempting to connect to: \(renderer.name)")
+            
+            // VLCKit 4.0: For Chromecast, we need to stop playback first
+            // The Chromecast module creates a TLS session which can crash if done during playback
+            let wasPlaying = mediaPlayer.isPlaying
+            let currentPosition = mediaPlayer.position
+            
+            if wasPlaying {
+                print("[Renderer] Pausing playback before renderer connection...")
+                mediaPlayer.pause()
+                // Give VLC time to process the pause
+                Thread.sleep(forTimeInterval: 0.3)
+            }
+            
+            // Set renderer on a background queue to avoid blocking main thread
+            var success = false
+            let semaphore = DispatchSemaphore(value: 0)
+            
+            DispatchQueue.global(qos: .userInitiated).async {
+                // Attempt to set renderer
+                success = mediaPlayer.setRendererItem(renderer.rendererItem)
+                semaphore.signal()
+            }
+            
+            // Wait with timeout to prevent infinite blocking
+            let result = semaphore.wait(timeout: .now() + 5.0)
+            
+            if result == .timedOut {
+                print("[Renderer] Connection timed out for: \(renderer.name)")
+                // Resume playback if we paused it
+                if wasPlaying {
+                    mediaPlayer.play()
+                }
+                return false
+            }
+            
             if success {
                 DispatchQueue.main.async { [weak self] in
                     self?.selectedRenderer = renderer
                 }
-                print("[Renderer] Connected to: \(renderer.name)")
+                print("[Renderer] Successfully connected to: \(renderer.name)")
+                
+                // Resume playback with renderer
+                if wasPlaying {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        mediaPlayer.play()
+                        // Restore position approximately
+                        if currentPosition > 0.01 {
+                            mediaPlayer.position = currentPosition
+                        }
+                    }
+                }
             } else {
                 print("[Renderer] Failed to connect to: \(renderer.name)")
+                // Resume local playback if we paused it
+                if wasPlaying {
+                    mediaPlayer.play()
+                }
             }
             return success
         }
         
         /// Disconnect from current renderer (play locally)
         public func disconnect() {
-            _ = mediaPlayer?.setRendererItem(nil)
+            guard let mediaPlayer = mediaPlayer else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.selectedRenderer = nil
+                }
+                return
+            }
+            
+            let wasPlaying = mediaPlayer.isPlaying
+            let currentPosition = mediaPlayer.position
+            
+            if wasPlaying {
+                mediaPlayer.pause()
+                Thread.sleep(forTimeInterval: 0.2)
+            }
+            
+            _ = mediaPlayer.setRendererItem(nil)
+            
             DispatchQueue.main.async { [weak self] in
                 self?.selectedRenderer = nil
             }
-            print("[Renderer] Disconnected")
+            print("[Renderer] Disconnected - returning to local playback")
+            
+            // Resume local playback
+            if wasPlaying {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    mediaPlayer.play()
+                    if currentPosition > 0.01 {
+                        mediaPlayer.position = currentPosition
+                    }
+                }
+            }
         }
         
         /// Get available discoverer names (for debugging)
