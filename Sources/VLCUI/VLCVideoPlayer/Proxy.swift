@@ -22,6 +22,14 @@ public extension VLCVideoPlayer {
             self.mediaPlayer = nil
             self.videoPlayerView = nil
         }
+        
+        /// Returns the video content view for PiP setup
+        /// This is the view that VLC renders to
+        #if !os(macOS)
+        public var videoContentView: UIView? {
+            return videoPlayerView
+        }
+        #endif
 
         /// Play the current media.
         public func play() {

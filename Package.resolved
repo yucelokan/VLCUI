@@ -1,0 +1,14 @@
+{
+  "pins" : [
+    {
+      "identity" : "vlckit-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/yucelokan/vlckit-spm.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "55ff552899408a9c26ea4a7d1f180a3259995c74"
+      }
+    }
+  ],
+  "version" : 2
+}
