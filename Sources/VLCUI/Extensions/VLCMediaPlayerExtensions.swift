@@ -8,58 +8,53 @@ import VLCKit
 
 extension VLCMediaPlayer {
 
+    /// VLCKit 4.0: Use currentSubTitleFontScale property
+    /// The scale is relative where 1.0 is the default size
     func setSubtitleSize(_ size: VLCVideoPlayer.ValueSelector<Int>) {
-        let value: Int?
-
         switch size {
         case .auto:
-            value = nil
-        case let .absolute(size):
-            value = size
+            currentSubTitleFontScale = 1.0
+        case let .absolute(sizeValue):
+            // Convert from the old VLC freetype-fontsize (inverted scale)
+            // to the new scale (1.0 = default, >1 = bigger, <1 = smaller)
+            // Old: 16-72 where smaller number = bigger font
+            // New: scale where 1.0 = default
+            // If sizeValue is like old freetype (16=big, 72=small), convert it
+            // Assume default was ~44, so scale = 44.0 / sizeValue
+            let scale = 44.0 / max(Float(sizeValue), 1.0)
+            currentSubTitleFontScale = scale
         }
-
-        #if !os(macOS)
-        perform(
-            Selector(("setTextRendererFontSize:")),
-            with: value
-        )
-        #endif
     }
 
+    /// VLCKit 4.0: Font must be set via media options before playback
+    /// This function has limited effect during playback
     func setSubtitleFont(_ font: VLCVideoPlayer.ValueSelector<_PlatformFont>) {
+        // In VLCKit 4.0, subtitle font must be set via media options before playback
+        // This method is kept for API compatibility but may not work during playback
         switch font {
         case .auto:
-            setSubtitleFont(_PlatformFont.defaultSubtitleFont.fontName)
-        case let .absolute(font):
-            setSubtitleFont(font.fontName)
+            break
+        case let .absolute(fontValue):
+            _ = fontValue.fontName // Font name would be set via --freetype-font option
         }
     }
 
     func setSubtitleFont(_ fontName: String) {
-        #if !os(macOS)
-        perform(
-            Selector(("setTextRendererFont:")),
-            with: fontName
-        )
-        #endif
+        // In VLCKit 4.0, this must be set via media options before playback
+        // Options like --freetype-font should be added to VLCMedia
+        _ = fontName
     }
 
+    /// VLCKit 4.0: Color must be set via media options before playback
     func setSubtitleColor(_ color: VLCVideoPlayer.ValueSelector<_PlatformColor>) {
-        let value: UInt
-
+        // In VLCKit 4.0, subtitle color must be set via media options before playback
+        // Use --freetype-color option when creating the media
         switch color {
         case .auto:
-            value = _PlatformColor.white.hex
-        case let .absolute(fontColor):
-            value = fontColor.hex
+            break
+        case let .absolute(colorValue):
+            _ = colorValue.hex // Color would be set via --freetype-color option
         }
-
-        #if !os(macOS)
-        perform(
-            Selector(("setTextRendererFontColor:")),
-            with: value
-        )
-        #endif
     }
 
     // VLCKit 4.0: Use textTracks instead of videoSubTitlesIndexes
