@@ -343,7 +343,7 @@ public extension VLCVideoPlayer {
             if isDefault {
                 if filter.isEnabled {
                     _ = filter.resetParametersIfNeeded()
-                    filter.enabled = false
+                    filter.isEnabled = false
                 }
                 return
             }
@@ -353,7 +353,7 @@ public extension VLCVideoPlayer {
             filter.hue.value = NSNumber(value: hue)
             filter.saturation.value = NSNumber(value: saturation)
             filter.gamma.value = NSNumber(value: gamma)
-            filter.enabled = true
+            filter.isEnabled = true
         }
     }
 }
