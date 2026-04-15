@@ -315,5 +315,45 @@ public extension VLCVideoPlayer {
                 mediaPlayer?.videoAspectRatio = UnsafeMutablePointer(mutating: cString)
             }
         }
+
+        /// Applies VLC's Adjust video filter in real-time via MobileVLCKit's VLCAdjustFilter.
+        ///
+        /// Ranges (from libvlc adjust.c):
+        ///   - contrast:   0.0–2.0   (default 1.0)
+        ///   - brightness: 0.0–2.0   (default 1.0)
+        ///   - hue:       -180–180   (default 0)
+        ///   - saturation: 0.0–3.0   (default 1.0)
+        ///   - gamma:     0.01–10.0  (default 1.0)
+        public func applyVideoAdjust(
+            contrast: Float,
+            brightness: Float,
+            hue: Float,
+            saturation: Float,
+            gamma: Float
+        ) {
+            guard let player = mediaPlayer else { return }
+            let filter = player.adjustFilter
+
+            let isDefault = contrast == 1.0
+                && brightness == 1.0
+                && hue == 0.0
+                && saturation == 1.0
+                && gamma == 1.0
+
+            if isDefault {
+                if filter.isEnabled {
+                    _ = filter.resetParametersIfNeeded()
+                    filter.enabled = false
+                }
+                return
+            }
+
+            filter.contrast.value = NSNumber(value: contrast)
+            filter.brightness.value = NSNumber(value: brightness)
+            filter.hue.value = NSNumber(value: hue)
+            filter.saturation.value = NSNumber(value: saturation)
+            filter.gamma.value = NSNumber(value: gamma)
+            filter.enabled = true
+        }
     }
 }
