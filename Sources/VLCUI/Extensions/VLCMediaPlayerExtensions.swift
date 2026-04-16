@@ -84,6 +84,17 @@ extension VLCMediaPlayer {
         }
     }
 
+    func videoTrackIndex(from track: VLCVideoPlayer.ValueSelector<Int>) -> Int {
+        guard let indexes = videoTrackIndexes as? [Int] else { return -1 }
+
+        switch track {
+        case .auto:
+            return indexes.first(where: { $0 != -1 }) ?? -1
+        case let .absolute(index):
+            return indexes.contains(index) ? index : -1
+        }
+    }
+
     func rate(from rate: VLCVideoPlayer.ValueSelector<Float>) -> Float {
         switch rate {
         case .auto:

@@ -132,10 +132,22 @@ public extension VLCVideoPlayer {
         /// Set the audio track index.
         ///
         /// - Important: If there is no valid track with the given index, the track will default to disabled.
+        /// Set the audio track index.
+        ///
+        /// - Important: If there is no valid track with the given index, the track will default to disabled.
         public func setAudioTrack(_ index: ValueSelector<Int>) {
             guard let mediaPlayer else { return }
             let newTrackIndex = mediaPlayer.audioTrackIndex(from: index)
             mediaPlayer.currentAudioTrackIndex = newTrackIndex.asInt32
+        }
+
+        /// Set the video track index.
+        ///
+        /// - Important: If there is no valid track with the given index, the track will default to disabled.
+        public func setVideoTrack(_ index: ValueSelector<Int>) {
+            guard let mediaPlayer else { return }
+            let newTrackIndex = mediaPlayer.videoTrackIndex(from: index)
+            mediaPlayer.currentVideoTrackIndex = newTrackIndex.asInt32
         }
 
         /// Set the subtitle delay
