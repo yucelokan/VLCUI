@@ -289,11 +289,21 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
             videoContentView.apply(transform: .identity)
         }
 
-        let defaultSubtitleTrackIndex = player.subtitleTrackIndex(from: configuration.subtitleIndex)
-        player.currentVideoSubTitleIndex = defaultSubtitleTrackIndex.asInt32
+        // Only force a track when the caller explicitly requested one (.absolute).
+        // `.auto` previously resolved to "first non-disable index", which silently
+        // OVERRODE the track libVLC itself had already selected (e.g. via the
+        // container's default-track flags) on the first time-changed callback —
+        // after consumers had already observed and trusted the original selection.
+        // `.auto` now means "leave libVLC's own selection untouched".
+        if case .absolute = configuration.subtitleIndex {
+            let defaultSubtitleTrackIndex = player.subtitleTrackIndex(from: configuration.subtitleIndex)
+            player.currentVideoSubTitleIndex = defaultSubtitleTrackIndex.asInt32
+        }
 
-        let defaultAudioTrackIndex = player.audioTrackIndex(from: configuration.audioIndex)
-        player.currentAudioTrackIndex = defaultAudioTrackIndex.asInt32
+        if case .absolute = configuration.audioIndex {
+            let defaultAudioTrackIndex = player.audioTrackIndex(from: configuration.audioIndex)
+            player.currentAudioTrackIndex = defaultAudioTrackIndex.asInt32
+        }
 
         player.setSubtitleSize(configuration.subtitleSize)
         player.setSubtitleFont(configuration.subtitleFont)
