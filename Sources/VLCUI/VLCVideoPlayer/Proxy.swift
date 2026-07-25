@@ -81,8 +81,33 @@ public extension VLCVideoPlayer {
         }
 
         /// Stop the current media.
+        ///
+        /// - Important: This calls into libVLC synchronously on the calling thread.
+        ///   `-stop` can block for a noticeable amount of time (or, on a stalled
+        ///   network stream, much longer) while libVLC tears down its internal
+        ///   demux/decode/audio-output threads. Prefer `stopAsync()` from any
+        ///   context where blocking the caller (e.g. the main thread) isn't
+        ///   acceptable, which is effectively always true from app teardown paths.
         public func stop() {
             mediaPlayer?.stop()
+        }
+
+        /// Stops the current media without blocking the calling thread.
+        ///
+        /// Routes through the same dedicated serial queue
+        /// (`VLCMediaPlayerTeardown.queue`) used internally by
+        /// `UIVLCVideoPlayerView` for its own end-of-life teardown. Using one shared
+        /// serial queue — instead of each caller hopping onto the concurrent
+        /// `DispatchQueue.global()` independently — guarantees this call and the
+        /// view's own teardown never call into the same `VLCMediaPlayer`
+        /// concurrently from two different threads, which is unsafe and can itself
+        /// cause the exact same kind of libVLC-internal lock contention this is
+        /// trying to avoid.
+        public func stopAsync() {
+            guard let player = mediaPlayer else { return }
+            VLCMediaPlayerTeardown.queue.async {
+                player.stop()
+            }
         }
 
         /// Jump forward a given amount of seconds.

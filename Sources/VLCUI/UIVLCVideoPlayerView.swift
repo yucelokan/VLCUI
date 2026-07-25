@@ -90,13 +90,18 @@ public class UIVLCVideoPlayerView: _PlatformView {
     ///
     /// This detaches the player from our drawable synchronously (cheap, avoids a stale
     /// player racing a new one for the same rendering surface), then hands the only
-    /// strong reference to a background queue closure: `stop()` and the eventual release
-    /// (and hence `dealloc` / `libvlc_media_player_destroy`) both happen there instead of
-    /// on the caller's thread.
+    /// strong reference to `VLCMediaPlayerTeardown.queue` — a single dedicated
+    /// **serial** queue shared with `Proxy.stopAsync()`. `stop()` and the eventual
+    /// release (and hence `dealloc` / `libvlc_media_player_destroy`) both happen there
+    /// instead of on the caller's thread. Using the same serial queue as
+    /// `Proxy.stopAsync()` (rather than each hopping onto the concurrent
+    /// `DispatchQueue.global()` independently) guarantees a caller-initiated stop and
+    /// this view's own teardown can never call into the same `VLCMediaPlayer`
+    /// concurrently from two different threads.
     private func releaseMediaPlayerOffMainThread(_ player: VLCMediaPlayer?) {
         guard let player else { return }
         player.drawable = nil
-        DispatchQueue.global(qos: .utility).async {
+        VLCMediaPlayerTeardown.queue.async {
             player.stop()
             // `player`'s last strong reference is released at the end of this closure,
             // on this background queue — not on the thread that called this function.
