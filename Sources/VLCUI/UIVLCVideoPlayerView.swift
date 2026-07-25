@@ -76,36 +76,30 @@ public class UIVLCVideoPlayerView: _PlatformView {
         releaseMediaPlayerOffMainThread(currentMediaPlayer)
     }
 
-    /// Stops and releases a VLCMediaPlayer without blocking the calling thread.
+    /// Stops and releases a VLCMediaPlayer without ever blocking the main thread.
     ///
     /// `-[VLCMediaPlayer dealloc]` synchronously calls `libvlc_media_player_destroy`,
     /// which does a blocking `pthread_join` waiting for libVLC's internal
     /// demux/decode/audio-output threads to fully terminate. On a stalled or slow
     /// network stream (the norm for IPTV-style playback) this join can take seconds,
     /// or in the worst case hang indefinitely if the internal thread is stuck (e.g. on
-    /// a blocked network read). Since this view is normally torn down by SwiftUI on the
-    /// main thread (when the hosting view is removed from the hierarchy), letting ARC
-    /// release the last strong reference there freezes the UI, and in the worst case
-    /// triggers a watchdog kill.
+    /// a blocked network read). Whatever thread drops the *last* strong reference pays
+    /// that cost — and VLCKit's own event blocks pending on the main queue each retain
+    /// the player, so simply releasing our reference on a background queue is NOT
+    /// enough (a pending main-queue event block can end up being the last holder and
+    /// trigger `dealloc` on the main thread anyway; confirmed via device thread dump).
     ///
     /// This detaches the player from our drawable synchronously (cheap, avoids a stale
-    /// player racing a new one for the same rendering surface), then hands the only
-    /// strong reference to `VLCMediaPlayerTeardown.queue` — a single dedicated
-    /// **serial** queue shared with `Proxy.stopAsync()`. `stop()` and the eventual
-    /// release (and hence `dealloc` / `libvlc_media_player_destroy`) both happen there
-    /// instead of on the caller's thread. Using the same serial queue as
-    /// `Proxy.stopAsync()` (rather than each hopping onto the concurrent
-    /// `DispatchQueue.global()` independently) guarantees a caller-initiated stop and
-    /// this view's own teardown can never call into the same `VLCMediaPlayer`
-    /// concurrently from two different threads.
+    /// player racing a new one for the same rendering surface), then hands the player
+    /// to `VLCMediaPlayerTeardown.retire(_:)`, which stops it on a dedicated serial
+    /// queue, waits for the main queue to drain all pending VLCKit event blocks (each
+    /// of which retains the player), and only then drops the final reference — on that
+    /// background queue — so `dealloc`/`libvlc_media_player_destroy`/`pthread_join`
+    /// can never run on the main thread.
     private func releaseMediaPlayerOffMainThread(_ player: VLCMediaPlayer?) {
         guard let player else { return }
         player.drawable = nil
-        VLCMediaPlayerTeardown.queue.async {
-            player.stop()
-            // `player`'s last strong reference is released at the end of this closure,
-            // on this background queue — not on the thread that called this function.
-        }
+        VLCMediaPlayerTeardown.retire(player)
     }
 
     private func setupVideoContentView() {
