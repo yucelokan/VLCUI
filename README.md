@@ -4,7 +4,14 @@ A [VLCKit](https://code.videolan.org/videolan/VLCKit) wrapper for SwiftUI.
 
 ## Requirements
 
-VLCKit must be installed and added to your project prior to using VLCUI.
+The `vlc372` branch uses the VLCKit 3.7.2 binary distributed by
+[`yucelokan/vlckit-spm`](https://github.com/yucelokan/vlckit-spm/tree/vlc372).
+
+Add this branch with Swift Package Manager:
+
+```swift
+.package(url: "https://github.com/yucelokan/VLCUI.git", branch: "vlc372")
+```
 
 ## Usage
 
@@ -18,7 +25,8 @@ struct ContentView: View {
 
 ## Example
 
-An example project is provided to show basic functionality of VLCUI. Download the frameworks with the provided **Cartfile**:
+An example project is provided to show basic functionality of VLCUI. Download the
+VLCKit 3.7.2 frameworks with the provided **Cartfile**:
 
 ```shell
 carthage update --use-xcframeworks
