@@ -98,6 +98,10 @@ public class UIVLCVideoPlayerView: _PlatformView {
     /// can never run on the main thread.
     private func releaseMediaPlayerOffMainThread(_ player: VLCMediaPlayer?) {
         guard let player else { return }
+        // Stop producing delegate events before the replacement player is installed.
+        // Events already queued by VLCKit are still rejected by the identity guards
+        // in the delegate callbacks below.
+        player.delegate = nil
         player.drawable = nil
         VLCMediaPlayerTeardown.retire(player)
     }
@@ -228,9 +232,15 @@ extension UIVLCVideoPlayerView {
 extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
 
     public func mediaPlayerTimeChanged(_ aNotification: Notification) {
-        let player = aNotification.object as! VLCMediaPlayer
+        guard let player = aNotification.object as? VLCMediaPlayer,
+              player === currentMediaPlayer,
+              let media = player.media else { return }
+
+        // A replaced VLCMediaPlayer can still have delegate events queued on the
+        // main thread while its teardown runs in the background. Never let that old
+        // instance mutate the shared state/configuration of the replacement player.
         let currentTicks = player.time.intValue
-        let playbackInformation = constructPlaybackInformation(player: player, media: player.media!)
+        let playbackInformation = constructPlaybackInformation(player: player, media: media)
 
         if !hasSetConfiguration {
             setConfigurationValues(
@@ -264,11 +274,14 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
     }
 
     public func mediaPlayerStateChanged(_ aNotification: Notification) {
-        let player = aNotification.object as! VLCMediaPlayer
+        guard let player = aNotification.object as? VLCMediaPlayer,
+              player === currentMediaPlayer,
+              let media = player.media else { return }
+
         guard player.state != .playing, player.state != lastPlayerState else { return }
 
         let wrappedState = VLCVideoPlayer.State(rawValue: player.state.rawValue) ?? .error
-        let playbackInformation = constructPlaybackInformation(player: player, media: player.media!)
+        let playbackInformation = constructPlaybackInformation(player: player, media: media)
 
         onStateUpdated(wrappedState, playbackInformation)
         lastPlayerState = player.state
