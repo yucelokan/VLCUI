@@ -15,12 +15,20 @@ public struct VLCVideoPlayer: _PlatformRepresentable {
     }
 
     public func updateNSView(_ nsView: UIVLCVideoPlayerView, context: Context) {}
+
+    public static func dismantleNSView(_ nsView: UIVLCVideoPlayerView, coordinator: ()) {
+        nsView.retireCurrentMediaPlayer()
+    }
     #else
     public func makeUIView(context: Context) -> UIVLCVideoPlayerView {
         makeVideoPlayerView()
     }
 
     public func updateUIView(_ uiView: UIVLCVideoPlayerView, context: Context) {}
+
+    public static func dismantleUIView(_ uiView: UIVLCVideoPlayerView, coordinator: ()) {
+        uiView.retireCurrentMediaPlayer()
+    }
     #endif
 
     private func makeVideoPlayerView() -> UIVLCVideoPlayerView {

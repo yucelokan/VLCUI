@@ -94,20 +94,23 @@ public extension VLCVideoPlayer {
 
         /// Stops the current media without blocking the calling thread.
         ///
-        /// Routes through the same dedicated serial queue
-        /// (`VLCMediaPlayerTeardown.queue`) used internally by
-        /// `UIVLCVideoPlayerView` for its own end-of-life teardown. Using one shared
-        /// serial queue — instead of each caller hopping onto the concurrent
-        /// `DispatchQueue.global()` independently — guarantees this call and the
-        /// view's own teardown never call into the same `VLCMediaPlayer`
-        /// concurrently from two different threads, which is unsafe and can itself
-        /// cause the exact same kind of libVLC-internal lock contention this is
-        /// trying to avoid.
+        /// Serialized with retirement for this player only. Do not issue play
+        /// while this stop is pending. Use retireAsync() for terminal teardown.
         public func stopAsync() {
             guard let player = mediaPlayer else { return }
-            VLCMediaPlayerTeardown.queue.async {
-                player.stop()
-            }
+            VLCMediaPlayerTeardown.stop(player)
+        }
+
+        /// Silences and unbinds immediately, then stops off-main. To play again,
+        /// create a fresh session with playNewMedia instead of reusing this one.
+        @MainActor
+        public func retireAsync() {
+            videoPlayerView?.retireCurrentMediaPlayer()
+        }
+
+        @MainActor
+        public func setVolume(_ volume: Int32) {
+            mediaPlayer?.audio?.volume = volume
         }
 
         /// Jump forward a given amount of seconds.

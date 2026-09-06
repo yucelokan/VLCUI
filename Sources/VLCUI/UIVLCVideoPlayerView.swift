@@ -55,6 +55,8 @@ public class UIVLCVideoPlayerView: _PlatformView {
         self.loggingInfo = loggingInfo
         super.init(frame: .zero)
 
+        // SwiftUI can install a new view before dismantling its predecessor.
+        proxy?.videoPlayerView?.retireCurrentMediaPlayer()
         proxy?.videoPlayerView = self
 
         #if os(macOS)
@@ -98,12 +100,21 @@ public class UIVLCVideoPlayerView: _PlatformView {
     /// can never run on the main thread.
     private func releaseMediaPlayerOffMainThread(_ player: VLCMediaPlayer?) {
         guard let player else { return }
+        player.audio?.volume = 0
         // Stop producing delegate events before the replacement player is installed.
         // Events already queued by VLCKit are still rejected by the identity guards
         // in the delegate callbacks below.
         player.delegate = nil
         player.drawable = nil
         VLCMediaPlayerTeardown.retire(player)
+    }
+
+    /// A late dismantle must never clear the newer view's proxy binding.
+    func retireCurrentMediaPlayer() {
+        guard let player = currentMediaPlayer else { return }
+        currentMediaPlayer = nil
+        if proxy?.mediaPlayer === player { proxy?.mediaPlayer = nil }
+        releaseMediaPlayerOffMainThread(player)
     }
 
     private func setupVideoContentView() {
@@ -118,8 +129,7 @@ public class UIVLCVideoPlayerView: _PlatformView {
     }
 
     func setupVLCMediaPlayer(with newConfiguration: VLCVideoPlayer.Configuration) {
-        releaseMediaPlayerOffMainThread(currentMediaPlayer)
-        currentMediaPlayer = nil
+        retireCurrentMediaPlayer()
 
         let media = VLCMedia(url: newConfiguration.url)
         media.addOptions(newConfiguration.options)
