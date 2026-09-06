@@ -78,26 +78,10 @@ public class UIVLCVideoPlayerView: _PlatformView {
         releaseMediaPlayerOffMainThread(currentMediaPlayer)
     }
 
-    /// Stops and releases a VLCMediaPlayer without ever blocking the main thread.
-    ///
-    /// `-[VLCMediaPlayer dealloc]` synchronously calls `libvlc_media_player_destroy`,
-    /// which does a blocking `pthread_join` waiting for libVLC's internal
-    /// demux/decode/audio-output threads to fully terminate. On a stalled or slow
-    /// network stream (the norm for IPTV-style playback) this join can take seconds,
-    /// or in the worst case hang indefinitely if the internal thread is stuck (e.g. on
-    /// a blocked network read). Whatever thread drops the *last* strong reference pays
-    /// that cost — and VLCKit's own event blocks pending on the main queue each retain
-    /// the player, so simply releasing our reference on a background queue is NOT
-    /// enough (a pending main-queue event block can end up being the last holder and
-    /// trigger `dealloc` on the main thread anyway; confirmed via device thread dump).
-    ///
-    /// This detaches the player from our drawable synchronously (cheap, avoids a stale
-    /// player racing a new one for the same rendering surface), then hands the player
-    /// to `VLCMediaPlayerTeardown.retire(_:)`, which stops it on a dedicated serial
-    /// queue, waits for the main queue to drain all pending VLCKit event blocks (each
-    /// of which retains the player), and only then drops the final reference — on that
-    /// background queue — so `dealloc`/`libvlc_media_player_destroy`/`pthread_join`
-    /// can never run on the main thread.
+    /// Silence and detach on the UI thread before background retirement.
+    /// libVLC stop/dealloc can wait on network/decode threads. The per-player
+    /// worker keeps that cost off UI and retains through an event drain/grace
+    /// period; see VLCMediaPlayerTeardown for the binary callback limitations.
     private func releaseMediaPlayerOffMainThread(_ player: VLCMediaPlayer?) {
         guard let player else { return }
         player.audio?.volume = 0
