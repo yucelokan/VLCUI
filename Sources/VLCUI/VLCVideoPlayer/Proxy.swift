@@ -35,6 +35,16 @@ public extension VLCVideoPlayer {
         public var videoSize: CGSize {
             return mediaPlayer?.videoSize ?? CGSize(width: 1920, height: 1080)
         }
+
+        /// Current libVLC counters, independent of state/time delegate delivery.
+        /// During remote header parsing or a resume seek the input may advance
+        /// without any time notification. This reads the bound media only; it
+        /// never opens a second connection or requests metadata parsing.
+        @MainActor
+        public var statisticsSnapshot: VLCVideoPlayer.Statistics? {
+            guard let media = mediaPlayer?.media else { return nil }
+            return .init(stats: media.statistics)
+        }
         
         /// Captures a snapshot of the current video frame and returns it as UIImage
         /// This is useful for PiP frame capture as it bypasses GPU rendering
