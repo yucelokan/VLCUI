@@ -10,6 +10,9 @@ public extension VLCVideoPlayer {
     struct Configuration {
         public var url: URL
         public var autoPlay: Bool
+        /// Applied before play(), including replacement/replay players. Nil keeps
+        /// libVLC's default; clients resolving tracks asynchronously can start at zero.
+        public var initialVolume: Int32?
 
         @available(iOS, deprecated: 16.0, message: "Use `startSeconds` instead")
         @available(tvOS, deprecated: 16.0, message: "Use `startSeconds` instead")
@@ -42,10 +45,12 @@ public extension VLCVideoPlayer {
             subtitleFont: ValueSelector<_PlatformFont> = .auto,
             subtitleColor: ValueSelector<_PlatformColor> = .auto,
             playbackChildren: [PlaybackChild] = [],
-            options: [String: Any] = [:]
+            options: [String: Any] = [:],
+            initialVolume: Int32? = nil
         ) {
             self.url = url
             self.autoPlay = autoPlay
+            self.initialVolume = initialVolume
             self.startTime = startTime
             self.aspectFill = aspectFill
             self.replay = replay
@@ -73,10 +78,12 @@ public extension VLCVideoPlayer {
             subtitleFont: ValueSelector<_PlatformFont> = .auto,
             subtitleColor: ValueSelector<_PlatformColor> = .auto,
             playbackChildren: [PlaybackChild] = [],
-            options: [String: Any] = [:]
+            options: [String: Any] = [:],
+            initialVolume: Int32? = nil
         ) {
             self.url = url
             self.autoPlay = autoPlay
+            self.initialVolume = initialVolume
             self.startTime = .ticks(Int(startSeconds.milliseconds))
             self.aspectFill = aspectFill
             self.replay = replay

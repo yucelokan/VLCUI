@@ -119,6 +119,11 @@ public class UIVLCVideoPlayerView: _PlatformView {
         media.addOptions(newConfiguration.options)
 
         let newMediaPlayer = VLCMediaPlayer()
+        // Never rely on a later buffering delegate event to silence startup.
+        // That event can be delayed by UI work while libVLC is already decoding.
+        if let volume = newConfiguration.initialVolume {
+            newMediaPlayer.audio?.volume = min(200, max(0, volume))
+        }
         newMediaPlayer.media = media
         newMediaPlayer.drawable = videoContentView
         newMediaPlayer.delegate = self
