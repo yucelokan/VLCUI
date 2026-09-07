@@ -41,7 +41,9 @@ enum VLCMediaPlayerTeardown {
         retirement.queue.async {
             retirement.player.stop()
             let elapsed = ProcessInfo.processInfo.systemUptime - requestedAt
-            NSLog("[VLCUI] stop completed player=%@ elapsed=%.3fs", String(describing: key), elapsed)
+            // VLCKit 3.7.2 dispatches libvlc_media_player_stop_async internally.
+            // Returning from -stop does NOT acknowledge input/socket teardown.
+            NSLog("[VLCUI] stop call returned player=%@ elapsed=%.3fs teardown_ack=false", String(describing: key), elapsed)
             DispatchQueue.main.async {
                 retirement.queue.asyncAfter(deadline: .now() + graceInterval) {
                     registryLock.lock()

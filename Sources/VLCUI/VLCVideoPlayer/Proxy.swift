@@ -92,20 +92,19 @@ public extension VLCVideoPlayer {
 
         /// Stop the current media.
         ///
-        /// - Important: This calls into libVLC synchronously on the calling thread.
-        ///   `-stop` can block for a noticeable amount of time (or, on a stalled
-        ///   network stream, much longer) while libVLC tears down its internal
-        ///   demux/decode/audio-output threads. Prefer `stopAsync()` from any
-        ///   context where blocking the caller (e.g. the main thread) isn't
-        ///   acceptable, which is effectively always true from app teardown paths.
+        /// - Important: This invokes VLCKit on the calling thread. The linked
+        ///   3.7.2 binary requests an asynchronous libVLC stop; return is not an
+        ///   input/socket teardown acknowledgement. Keep `stopAsync()` for UI
+        ///   callers so library work stays off-main across supported versions.
         public func stop() {
             mediaPlayer?.stop()
         }
 
         /// Stops the current media without blocking the calling thread.
         ///
-        /// Serialized with retirement for this player only. Do not issue play
-        /// while this stop is pending. Use retireAsync() for terminal teardown.
+        /// Serializes stop invocations with retirement for this player only;
+        /// it cannot serialize libVLC's internal asynchronous completion. Use
+        /// retireAsync() and a fresh player instead of stop-then-play reuse.
         public func stopAsync() {
             guard let player = mediaPlayer else { return }
             VLCMediaPlayerTeardown.stop(player)
