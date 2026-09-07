@@ -33,6 +33,7 @@ public class UIVLCVideoPlayerView: _PlatformView {
     private var lastAspectFill: Float = 0
     private var lastPlayerTicks: Int32 = 0
     private var lastPlayerState: VLCMediaPlayerState = .opening
+    private var startupClock = VLCStartupClock()
 
     private var aspectFillScale: CGFloat {
         guard let currentMediaPlayer else { return 1 }
@@ -144,6 +145,8 @@ public class UIVLCVideoPlayerView: _PlatformView {
         proxy?.mediaPlayer = newMediaPlayer
         lastPlayerTicks = 0
         lastPlayerState = .opening
+        startupClock = VLCStartupClock()
+        print("[VLCUI] startup player=\(ObjectIdentifier(newMediaPlayer)) initialVolume=\(newConfiguration.initialVolume.map(String.init) ?? "default")")
 
         if newConfiguration.autoPlay {
             newMediaPlayer.play()
@@ -240,6 +243,7 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         // instance mutate the shared state/configuration of the replacement player.
         let currentTicks = player.time.intValue
         let playbackInformation = constructPlaybackInformation(player: player, media: media)
+        logStartupMilestones(player: player, info: playbackInformation)
 
         if !hasSetConfiguration {
             setConfigurationValues(
@@ -281,9 +285,28 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
 
         let wrappedState = VLCVideoPlayer.State(rawValue: player.state.rawValue) ?? .error
         let playbackInformation = constructPlaybackInformation(player: player, media: media)
+        logStartupMilestones(player: player, info: playbackInformation)
 
         onStateUpdated(wrappedState, playbackInformation)
         lastPlayerState = player.state
+    }
+
+    private func logStartupMilestones(player: VLCMediaPlayer, info: VLCVideoPlayer.PlaybackInformation) {
+        let stats = info.statistics
+        let counters = [
+            ("input_bytes", stats.readBytes),
+            ("decoded_audio", stats.decodedAudio),
+            ("decoded_video", stats.decodedVideo),
+            ("displayed_picture_counter", stats.displayedPictures),
+            ("played_audio_buffer_counter", stats.playedAudioBuffers)
+        ]
+        for (name, count) in counters {
+            if let elapsed = startupClock.observe(name, count: count) {
+                // These are first OBSERVED libVLC counters, not microphone/HDMI
+                // measurements. Some SDKs never populate the output counters.
+                print("[VLCUI] startup milestone=\(name) player=\(ObjectIdentifier(player)) observed_ms=\(elapsed) count=\(count) volume=\(player.audio?.volume ?? -1)")
+            }
+        }
     }
 
     private func setConfigurationValues(with player: VLCMediaPlayer, from configuration: VLCVideoPlayer.Configuration) {
