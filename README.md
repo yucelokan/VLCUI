@@ -15,6 +15,21 @@ Add this branch with Swift Package Manager:
 
 ## Usage
 
+For startup investigations, opt in with `Configuration(...,
+startupDiagnosticsEnabled: true)`. This installs an allowlisted shared-library
+logger: connection phases, HTTP status codes, module-selection milestones and
+clock/audio errors only. It never forwards raw messages, URLs, hosts, credentials
+or headers. Each startup window is capped at 30 seconds / 128 events, with at most
+three occurrences per emitter/event. It makes no probe requests and changes no
+playback/retry decisions. `epoch` identifies the diagnostic window, **not** a
+libVLC input's ownership: old and current players can emit in the same window.
+Opt-in diagnostics do not sanitize any separate raw logger installed by a client.
+
+Run `ruby scripts/check_startup_diagnostics.rb` for isolated privacy/budget checks.
+The optional `--with-vlckit-fixture` uses an existing cached macOS framework and a
+loopback-only HTTP 503 server to verify the real callback without building an app
+or connecting to a media provider.
+
 ```swift
 struct ContentView: View {
 	var body: some View {

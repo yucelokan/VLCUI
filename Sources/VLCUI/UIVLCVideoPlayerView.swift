@@ -135,6 +135,10 @@ public class UIVLCVideoPlayerView: _PlatformView {
             newMediaPlayer.libraryInstance.debugLoggingTarget = self
         }
 
+        if newConfiguration.startupDiagnosticsEnabled {
+            VLCStartupDiagnostics.begin(player: newMediaPlayer, url: newConfiguration.url)
+        }
+
         for child in newConfiguration.playbackChildren {
             newMediaPlayer.addPlaybackSlave(child.url, type: child.type.asVLCSlaveType, enforce: child.enforce)
         }
