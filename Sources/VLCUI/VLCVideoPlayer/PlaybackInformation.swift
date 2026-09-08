@@ -39,6 +39,28 @@ public extension VLCVideoPlayer {
         public let sentBytes: Int
         public let sendBitrate: Float
 
+        /// A deterministic snapshot for media that has not created an input yet.
+        /// libVLC reports statistics as unavailable in that state; exposing zeros
+        /// prevents callers from mistaking uninitialised wrapper storage for real
+        /// transport or decoder progress.
+        public init() {
+            readBytes = 0
+            inputBitrate = 0
+            demuxReadBytes = 0
+            demuxBitrate = 0
+            demuxCorrupted = 0
+            demuxDiscontinuity = 0
+            decodedVideo = 0
+            decodedAudio = 0
+            displayedPictures = 0
+            lostPictures = 0
+            playedAudioBuffers = 0
+            lostAudioBuffers = 0
+            sentPackets = 0
+            sentBytes = 0
+            sendBitrate = 0
+        }
+
         public init(stats: VLCMedia.Stats) {
             readBytes = stats.readBytes.asInt
             inputBitrate = stats.inputBitrate

@@ -42,7 +42,19 @@ public extension VLCVideoPlayer {
         /// never opens a second connection or requests metadata parsing.
         @MainActor
         public var statisticsSnapshot: VLCVideoPlayer.Statistics? {
-            guard let media = mediaPlayer?.media else { return nil }
+            guard let player = mediaPlayer, let media = player.media else { return nil }
+
+            // VLCKit exposes VLCMedia.statistics as a non-optional value even
+            // though libvlc_media_get_stats() can report that no input statistics
+            // exist yet. In stopped/opening/terminal states its wrapper storage can
+            // therefore contain indeterminate counters. Those values must never be
+            // interpreted by startup recovery as network or decoder progress.
+            switch player.state {
+            case .stopped, .opening, .ended, .error:
+                return .init()
+            default:
+                break
+            }
             return .init(stats: media.statistics)
         }
         
