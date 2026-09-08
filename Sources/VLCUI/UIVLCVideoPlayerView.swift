@@ -24,6 +24,15 @@ public class UIVLCVideoPlayerView: _PlatformView {
     private let onStateUpdated: (VLCVideoPlayer.State, VLCVideoPlayer.PlaybackInformation) -> Void
     private let loggingInfo: (logger: VLCVideoPlayerLogger, level: VLCVideoPlayer.LoggingLevel)?
     private var currentMediaPlayer: VLCMediaPlayer?
+    private var retirementInFlight = false
+    private var retirementWaiters: [() -> Void] = []
+    private var pendingReplacement: (
+        generation: UInt64,
+        configuration: VLCVideoPlayer.Configuration,
+        completion: () -> Void
+    )?
+    private var replacementGeneration: UInt64 = 0
+    private var globalHandoverWaitGeneration: UInt64?
 
     // Note: necessary as the configuration values have to be set
     //       after streams have been added and playback starts for
@@ -57,7 +66,9 @@ public class UIVLCVideoPlayerView: _PlatformView {
         super.init(frame: .zero)
 
         // SwiftUI can install a new view before dismantling its predecessor.
-        proxy?.videoPlayerView?.retireCurrentMediaPlayer()
+        // Chain the first player to the predecessor's real retirement gate so
+        // two views sharing one proxy never own provider inputs concurrently.
+        let previousView = proxy?.videoPlayerView
         proxy?.videoPlayerView = self
 
         #if os(macOS)
@@ -67,7 +78,13 @@ public class UIVLCVideoPlayerView: _PlatformView {
         #endif
 
         setupVideoContentView()
-        setupVLCMediaPlayer(with: configuration)
+        if let previousView, previousView !== self {
+            previousView.retireCurrentMediaPlayer { [weak self] in
+                self?.setupVLCMediaPlayer(with: configuration)
+            }
+        } else {
+            setupVLCMediaPlayer(with: configuration)
+        }
     }
 
     @available(*, unavailable)
@@ -81,25 +98,51 @@ public class UIVLCVideoPlayerView: _PlatformView {
 
     /// Silence and detach on the UI thread before background retirement.
     /// libVLC stop/dealloc can wait on network/decode threads. The per-player
-    /// worker keeps that cost off UI and retains through an event drain/grace
-    /// period; see VLCMediaPlayerTeardown for the binary callback limitations.
-    private func releaseMediaPlayerOffMainThread(_ player: VLCMediaPlayer?) {
-        guard let player else { return }
+    /// worker keeps that cost off UI and reports a stopped-or-released handover
+    /// gate before a replacement is allowed to acquire the provider input.
+    private func releaseMediaPlayerOffMainThread(
+        _ player: VLCMediaPlayer?,
+        completion: @escaping () -> Void = {}
+    ) {
+        guard let player else {
+            completion()
+            return
+        }
         player.audio?.volume = 0
         // Stop producing delegate events before the replacement player is installed.
         // Events already queued by VLCKit are still rejected by the identity guards
         // in the delegate callbacks below.
         player.delegate = nil
         player.drawable = nil
-        VLCMediaPlayerTeardown.retire(player)
+        VLCMediaPlayerTeardown.retire(player, completion: completion)
     }
 
     /// A late dismantle must never clear the newer view's proxy binding.
-    func retireCurrentMediaPlayer() {
-        guard let player = currentMediaPlayer else { return }
+    func retireCurrentMediaPlayer(completion: @escaping () -> Void = {}) {
+        replacementGeneration &+= 1
+        pendingReplacement = nil
+        if retirementInFlight {
+            retirementWaiters.append(completion)
+            return
+        }
+        guard let player = currentMediaPlayer else {
+            completion()
+            return
+        }
         currentMediaPlayer = nil
         if proxy?.mediaPlayer === player { proxy?.mediaPlayer = nil }
-        releaseMediaPlayerOffMainThread(player)
+        retirementInFlight = true
+        releaseMediaPlayerOffMainThread(player) { [weak self] in
+            guard let self else {
+                completion()
+                return
+            }
+            self.retirementInFlight = false
+            completion()
+            let waiters = self.retirementWaiters
+            self.retirementWaiters.removeAll()
+            waiters.forEach { $0() }
+        }
     }
 
     private func setupVideoContentView() {
@@ -113,8 +156,57 @@ public class UIVLCVideoPlayerView: _PlatformView {
         ])
     }
 
-    func setupVLCMediaPlayer(with newConfiguration: VLCVideoPlayer.Configuration) {
-        retireCurrentMediaPlayer()
+    func setupVLCMediaPlayer(
+        with newConfiguration: VLCVideoPlayer.Configuration,
+        completion: @escaping () -> Void = {}
+    ) {
+        replacementGeneration &+= 1
+        let generation = replacementGeneration
+        pendingReplacement = (generation, newConfiguration, completion)
+
+        guard !retirementInFlight else { return }
+        guard let player = currentMediaPlayer else {
+            installPendingReplacement()
+            return
+        }
+
+        currentMediaPlayer = nil
+        if proxy?.mediaPlayer === player { proxy?.mediaPlayer = nil }
+        retirementInFlight = true
+        releaseMediaPlayerOffMainThread(player) { [weak self] in
+            guard let self else { return }
+            self.retirementInFlight = false
+            self.installPendingReplacement()
+            let waiters = self.retirementWaiters
+            self.retirementWaiters.removeAll()
+            waiters.forEach { $0() }
+        }
+    }
+
+    private func installPendingReplacement(afterGlobalHandover: Bool = false) {
+        guard !retirementInFlight, let replacement = pendingReplacement else { return }
+        if replacement.configuration.serializesInputHandover, !afterGlobalHandover {
+            guard globalHandoverWaitGeneration != replacement.generation else { return }
+            globalHandoverWaitGeneration = replacement.generation
+            VLCMediaPlayerTeardown.afterPendingRetirements { [weak self] in
+                guard let self else { return }
+                let waitedGeneration = self.globalHandoverWaitGeneration
+                self.globalHandoverWaitGeneration = nil
+                guard self.pendingReplacement?.generation == waitedGeneration else {
+                    self.installPendingReplacement()
+                    return
+                }
+                self.installPendingReplacement(afterGlobalHandover: true)
+            }
+            return
+        }
+        pendingReplacement = nil
+        guard replacement.generation == replacementGeneration else { return }
+        installVLCMediaPlayer(with: replacement.configuration)
+        replacement.completion()
+    }
+
+    private func installVLCMediaPlayer(with newConfiguration: VLCVideoPlayer.Configuration) {
 
         // Resolve only for a real player creation. Merely rebuilding a SwiftUI
         // configuration must not rotate or invalidate an active transport lease.

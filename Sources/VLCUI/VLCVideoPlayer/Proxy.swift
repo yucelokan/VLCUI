@@ -114,8 +114,12 @@ public extension VLCVideoPlayer {
         /// Silences and unbinds immediately, then stops off-main. To play again,
         /// create a fresh session with playNewMedia instead of reusing this one.
         @MainActor
-        public func retireAsync() {
-            videoPlayerView?.retireCurrentMediaPlayer()
+        public func retireAsync(completion: @escaping () -> Void = {}) {
+            guard let videoPlayerView else {
+                completion()
+                return
+            }
+            videoPlayerView.retireCurrentMediaPlayer(completion: completion)
         }
 
         @MainActor
@@ -313,8 +317,16 @@ public extension VLCVideoPlayer {
         }
 
         /// Play new media given a configuration.
-        public func playNewMedia(_ newConfiguration: Configuration) {
-            videoPlayerView?.setupVLCMediaPlayer(with: newConfiguration)
+        @MainActor
+        public func playNewMedia(
+            _ newConfiguration: Configuration,
+            completion: @escaping () -> Void = {}
+        ) {
+            guard let videoPlayerView else {
+                completion()
+                return
+            }
+            videoPlayerView.setupVLCMediaPlayer(with: newConfiguration, completion: completion)
         }
 
         /// Saves a snapshot of the current media.

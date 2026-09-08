@@ -22,6 +22,11 @@ public extension VLCVideoPlayer {
         /// Opt-in, bounded, privacy-allowlisted libVLC pipeline diagnostics.
         /// Shared-library events are observations, never recovery commands.
         public var startupDiagnosticsEnabled: Bool
+        /// When enabled, a newly created view waits for any retirement already
+        /// requested by another VLCUI view. Single-player apps can prevent a
+        /// rapid dismiss/reopen from briefly owning two provider inputs, while
+        /// multi-player clients retain the existing default behavior.
+        public var serializesInputHandover: Bool
 
         @available(iOS, deprecated: 16.0, message: "Use `startSeconds` instead")
         @available(tvOS, deprecated: 16.0, message: "Use `startSeconds` instead")
@@ -57,6 +62,7 @@ public extension VLCVideoPlayer {
             options: [String: Any] = [:],
             initialVolume: Int32? = nil,
             startupDiagnosticsEnabled: Bool = false,
+            serializesInputHandover: Bool = false,
             mediaURLProvider: (() -> URL)? = nil
         ) {
             self.url = url
@@ -64,6 +70,7 @@ public extension VLCVideoPlayer {
             self.autoPlay = autoPlay
             self.initialVolume = initialVolume
             self.startupDiagnosticsEnabled = startupDiagnosticsEnabled
+            self.serializesInputHandover = serializesInputHandover
             self.startTime = startTime
             self.aspectFill = aspectFill
             self.replay = replay
@@ -94,6 +101,7 @@ public extension VLCVideoPlayer {
             options: [String: Any] = [:],
             initialVolume: Int32? = nil,
             startupDiagnosticsEnabled: Bool = false,
+            serializesInputHandover: Bool = false,
             mediaURLProvider: (() -> URL)? = nil
         ) {
             self.url = url
@@ -101,6 +109,7 @@ public extension VLCVideoPlayer {
             self.autoPlay = autoPlay
             self.initialVolume = initialVolume
             self.startupDiagnosticsEnabled = startupDiagnosticsEnabled
+            self.serializesInputHandover = serializesInputHandover
             self.startTime = .ticks(Int(startSeconds.milliseconds))
             self.aspectFill = aspectFill
             self.replay = replay
