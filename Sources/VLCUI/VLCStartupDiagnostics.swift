@@ -8,10 +8,13 @@ final class VLCStartupDiagnostics: NSObject, VLCLogging {
     private static let shared = VLCStartupDiagnostics()
     private let lock = NSLock()
     private var budget = VLCStartupDiagnosticBudget()
+    private var networkActivity = VLCStartupNetworkActivityTracker()
+    private var emitsLogEvents = false
     var level: VLCLogLevel = .debug
 
     @MainActor
-    static func begin(player: VLCMediaPlayer, url: URL) {
+    @discardableResult
+    static func begin(player: VLCMediaPlayer, url: URL, emitsLogEvents: Bool = true) -> Int {
         let library = player.libraryInstance
         // Do not use debugLogging=true: that installs a raw console logger and
         // exposes signed URLs, provider credentials and HTTP headers.
@@ -22,15 +25,30 @@ final class VLCStartupDiagnostics: NSObject, VLCLogging {
         }
         shared.lock.lock()
         shared.budget.begin(now: ProcessInfo.processInfo.systemUptime)
+        shared.networkActivity = VLCStartupNetworkActivityTracker()
+        shared.emitsLogEvents = emitsLogEvents
         let epoch = shared.budget.epoch
         shared.lock.unlock()
-        let source = url.isFileURL ? "local" : "remote"
-        let allowedExtensions = ["m3u8", "mpd", "mkv", "mp4", "ts", "m4v", "mov", "avi"]
-        let fileExtension = url.pathExtension.lowercased()
-        let containerHint = allowedExtensions.contains(fileExtension) ? fileExtension : "other"
-        NSLog("[VLCUI] startup diagnostics epoch=%ld player=%@ source=%@ extension_hint=%@ scope=shared_library uptime_ms=%.0f libvlc=%@",
-              epoch, String(describing: ObjectIdentifier(player)), source, containerHint,
-              ProcessInfo.processInfo.systemUptime * 1000, library.version)
+        if emitsLogEvents {
+            let source = url.isFileURL ? "local" : "remote"
+            let allowedExtensions = ["m3u8", "mpd", "mkv", "mp4", "ts", "m4v", "mov", "avi"]
+            let fileExtension = url.pathExtension.lowercased()
+            let containerHint = allowedExtensions.contains(fileExtension) ? fileExtension : "other"
+            NSLog("[VLCUI] startup diagnostics epoch=%ld player=%@ source=%@ extension_hint=%@ scope=shared_library uptime_ms=%.0f libvlc=%@",
+                  epoch, String(describing: ObjectIdentifier(player)), source, containerHint,
+                  ProcessInfo.processInfo.systemUptime * 1000, library.version)
+        }
+        return epoch
+    }
+
+    static func networkActivity(
+        epoch: Int,
+        now: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> VLCStartupNetworkActivity? {
+        shared.lock.lock()
+        defer { shared.lock.unlock() }
+        guard shared.budget.epoch == epoch else { return nil }
+        return shared.networkActivity.snapshot(now: now)
     }
 
     func handleMessage(_ message: String, logLevel: VLCLogLevel, context: VLCLogContext?) {
@@ -45,7 +63,12 @@ final class VLCStartupDiagnostics: NSObject, VLCLogging {
         let objectID = context?.objectId ?? 0
         lock.lock()
         // Do not let a classified event race a new startup-window reset.
-        let accepted = budget.epoch == observedEpoch && budget.accept(event: event, objectID: objectID, now: now)
+        let belongsToWindow = budget.epoch == observedEpoch
+        if belongsToWindow {
+            networkActivity.observe(event: event, now: now)
+        }
+        let accepted = belongsToWindow && emitsLogEvents
+            && budget.accept(event: event, objectID: objectID, now: now)
         lock.unlock()
         guard accepted else { return }
         NSLog("[VLCUI] pipeline epoch=%ld scope=shared_library object=%llu thread=%lu event=%@ uptime_ms=%.0f",

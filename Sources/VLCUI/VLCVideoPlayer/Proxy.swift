@@ -46,6 +46,13 @@ public extension VLCVideoPlayer {
 
             return .init(player: player, media: media)
         }
+
+        /// Privacy-safe HTTP phase information for the actual player instance.
+        /// Requires `startupNetworkObservationEnabled`; reading it performs no I/O.
+        @MainActor
+        public var startupNetworkActivitySnapshot: VLCStartupNetworkActivity? {
+            videoPlayerView?.startupNetworkActivitySnapshot
+        }
         
         /// Captures a snapshot of the current video frame and returns it as UIImage
         /// This is useful for PiP frame capture as it bypasses GPU rendering

@@ -22,6 +22,10 @@ public extension VLCVideoPlayer {
         /// Opt-in, bounded, privacy-allowlisted libVLC pipeline diagnostics.
         /// Shared-library events are observations, never recovery commands.
         public var startupDiagnosticsEnabled: Bool
+        /// Exposes a privacy-safe HTTP startup snapshot through `Proxy` without
+        /// printing diagnostic events. It does not make probe requests or alter
+        /// playback; clients remain responsible for any timeout policy.
+        public var startupNetworkObservationEnabled: Bool
         /// When enabled, a newly created view waits for any retirement already
         /// requested by another VLCUI view. Single-player apps can prevent a
         /// rapid dismiss/reopen from briefly owning two provider inputs, while
@@ -62,6 +66,7 @@ public extension VLCVideoPlayer {
             options: [String: Any] = [:],
             initialVolume: Int32? = nil,
             startupDiagnosticsEnabled: Bool = false,
+            startupNetworkObservationEnabled: Bool = false,
             serializesInputHandover: Bool = false,
             mediaURLProvider: (() -> URL)? = nil
         ) {
@@ -70,6 +75,7 @@ public extension VLCVideoPlayer {
             self.autoPlay = autoPlay
             self.initialVolume = initialVolume
             self.startupDiagnosticsEnabled = startupDiagnosticsEnabled
+            self.startupNetworkObservationEnabled = startupNetworkObservationEnabled
             self.serializesInputHandover = serializesInputHandover
             self.startTime = startTime
             self.aspectFill = aspectFill
@@ -101,6 +107,7 @@ public extension VLCVideoPlayer {
             options: [String: Any] = [:],
             initialVolume: Int32? = nil,
             startupDiagnosticsEnabled: Bool = false,
+            startupNetworkObservationEnabled: Bool = false,
             serializesInputHandover: Bool = false,
             mediaURLProvider: (() -> URL)? = nil
         ) {
@@ -109,6 +116,7 @@ public extension VLCVideoPlayer {
             self.autoPlay = autoPlay
             self.initialVolume = initialVolume
             self.startupDiagnosticsEnabled = startupDiagnosticsEnabled
+            self.startupNetworkObservationEnabled = startupNetworkObservationEnabled
             self.serializesInputHandover = serializesInputHandover
             self.startTime = .ticks(Int(startSeconds.milliseconds))
             self.aspectFill = aspectFill

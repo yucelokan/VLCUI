@@ -43,6 +43,7 @@ public class UIVLCVideoPlayerView: _PlatformView {
     private var lastPlayerTicks: Int32 = 0
     private var lastPlayerState: VLCMediaPlayerState = .opening
     private var startupClock = VLCStartupClock()
+    private var startupDiagnosticEpoch: Int?
 
     private var aspectFillScale: CGFloat {
         guard let currentMediaPlayer else { return 1 }
@@ -230,8 +231,15 @@ public class UIVLCVideoPlayerView: _PlatformView {
             newMediaPlayer.libraryInstance.debugLoggingTarget = self
         }
 
-        if newConfiguration.startupDiagnosticsEnabled {
-            VLCStartupDiagnostics.begin(player: newMediaPlayer, url: newConfiguration.url)
+        if newConfiguration.startupDiagnosticsEnabled
+            || newConfiguration.startupNetworkObservationEnabled {
+            startupDiagnosticEpoch = VLCStartupDiagnostics.begin(
+                player: newMediaPlayer,
+                url: newConfiguration.url,
+                emitsLogEvents: newConfiguration.startupDiagnosticsEnabled
+            )
+        } else {
+            startupDiagnosticEpoch = nil
         }
 
         for child in newConfiguration.playbackChildren {
@@ -250,6 +258,11 @@ public class UIVLCVideoPlayerView: _PlatformView {
         if newConfiguration.autoPlay {
             newMediaPlayer.play()
         }
+    }
+
+    var startupNetworkActivitySnapshot: VLCStartupNetworkActivity? {
+        guard let startupDiagnosticEpoch else { return nil }
+        return VLCStartupDiagnostics.networkActivity(epoch: startupDiagnosticEpoch)
     }
 
     func setAspectFill(with percentage: Float) {

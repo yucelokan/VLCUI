@@ -1,5 +1,18 @@
 import Foundation
 
+/// Privacy-safe HTTP startup state for the currently installed VLC player.
+/// It deliberately contains no URL, host, headers or raw libVLC messages.
+public struct VLCStartupNetworkActivity: Equatable {
+    public let requestCount: Int
+    public let responseCount: Int
+    public let lastHTTPStatusCode: Int?
+    public let pendingRequestAge: TimeInterval?
+    public let pendingRequestFollowsRedirect: Bool
+
+    public var hasReceivedHTTPResponse: Bool { responseCount > 0 }
+    public var hasPendingRequest: Bool { pendingRequestAge != nil }
+}
+
 /// Deliberately NOT a URL-redacting log formatter. Only fixed event names and
 /// validated HTTP status numbers may leave this classifier. Unknown messages,
 /// URLs, hostnames, response/request headers and error descriptions are dropped.
@@ -47,6 +60,56 @@ enum VLCStartupDiagnosticPolicy {
         guard fields.count >= 2, ["http/1.0", "http/1.1", "http/2", "http/2.0"].contains(String(fields[0])),
               fields[1].count == 3, let code = Int(fields[1]), (100...599).contains(code) else { return nil }
         return "http_status_\(code)"
+    }
+
+    static func httpStatusCode(for event: String) -> Int? {
+        guard event.hasPrefix("http_status_"),
+              let code = Int(event.dropFirst("http_status_".count)),
+              (100...599).contains(code) else { return nil }
+        return code
+    }
+}
+
+/// Accepts only events produced by the allowlisted classifier above. A status
+/// without a preceding request is ignored so a late outgoing-player callback
+/// cannot manufacture progress in a newly opened startup window.
+struct VLCStartupNetworkActivityTracker {
+    private var requestCount = 0
+    private var responseCount = 0
+    private var lastHTTPStatusCode: Int?
+    private var pendingRequestStartedAt: TimeInterval?
+    private var pendingRequestFollowsRedirect = false
+    private var nextRequestFollowsRedirect = false
+
+    mutating func observe(event: String, now: TimeInterval) {
+        if event == "http_request_prepared" {
+            requestCount += 1
+            pendingRequestStartedAt = now
+            pendingRequestFollowsRedirect = nextRequestFollowsRedirect
+            nextRequestFollowsRedirect = false
+            return
+        }
+
+        guard event == "http_response_received"
+                || VLCStartupDiagnosticPolicy.httpStatusCode(for: event) != nil,
+              pendingRequestStartedAt != nil else { return }
+
+        responseCount += 1
+        let statusCode = VLCStartupDiagnosticPolicy.httpStatusCode(for: event)
+        lastHTTPStatusCode = statusCode
+        pendingRequestStartedAt = nil
+        pendingRequestFollowsRedirect = false
+        nextRequestFollowsRedirect = statusCode.map { (300..<400).contains($0) } ?? false
+    }
+
+    func snapshot(now: TimeInterval) -> VLCStartupNetworkActivity {
+        VLCStartupNetworkActivity(
+            requestCount: requestCount,
+            responseCount: responseCount,
+            lastHTTPStatusCode: lastHTTPStatusCode,
+            pendingRequestAge: pendingRequestStartedAt.map { max(0, now - $0) },
+            pendingRequestFollowsRedirect: pendingRequestFollowsRedirect
+        )
     }
 }
 

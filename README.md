@@ -25,6 +25,12 @@ playback/retry decisions. `epoch` identifies the diagnostic window, **not** a
 libVLC input's ownership: old and current players can emit in the same window.
 Opt-in diagnostics do not sanitize any separate raw logger installed by a client.
 
+Single-player clients can also enable `startupNetworkObservationEnabled` and read
+`Proxy.startupNetworkActivitySnapshot`. The snapshot contains only request/response
+counts, a validated status code and the age/class of an unanswered request. It
+does not print or retain URLs, hosts, headers or raw messages, and performs no
+network request. The client owns any timeout or recovery decision.
+
 Run `ruby scripts/check_startup_diagnostics.rb` for isolated privacy/budget checks.
 The optional `--with-vlckit-fixture` uses an existing cached macOS framework and a
 loopback-only HTTP 503 server to verify the real callback without building an app
