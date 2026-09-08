@@ -116,7 +116,10 @@ public class UIVLCVideoPlayerView: _PlatformView {
     func setupVLCMediaPlayer(with newConfiguration: VLCVideoPlayer.Configuration) {
         retireCurrentMediaPlayer()
 
-        let media = VLCMedia(url: newConfiguration.url)
+        // Resolve only for a real player creation. Merely rebuilding a SwiftUI
+        // configuration must not rotate or invalidate an active transport lease.
+        let playbackURL = newConfiguration.mediaURLProvider?() ?? newConfiguration.url
+        let media = VLCMedia(url: playbackURL)
         media.addOptions(newConfiguration.options)
 
         let newMediaPlayer = VLCMediaPlayer()

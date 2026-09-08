@@ -8,7 +8,13 @@ public extension VLCVideoPlayer {
 
     /// Configuration for VLCMediaPlayer
     struct Configuration {
+        /// Original media identity, preserved in diagnostics and playback information.
         public var url: URL
+        /// Resolves the playback URL once per actual player creation, including
+        /// replacements and replay, after retiring the previous player. Keep this
+        /// synchronous factory lightweight; do not perform network work here.
+        /// Nil plays `url` directly without changing existing client behavior.
+        public var mediaURLProvider: (() -> URL)?
         public var autoPlay: Bool
         /// Applied before play(), including replacement/replay players. Nil keeps
         /// libVLC's default; clients resolving tracks asynchronously can start at zero.
@@ -50,9 +56,11 @@ public extension VLCVideoPlayer {
             playbackChildren: [PlaybackChild] = [],
             options: [String: Any] = [:],
             initialVolume: Int32? = nil,
-            startupDiagnosticsEnabled: Bool = false
+            startupDiagnosticsEnabled: Bool = false,
+            mediaURLProvider: (() -> URL)? = nil
         ) {
             self.url = url
+            self.mediaURLProvider = mediaURLProvider
             self.autoPlay = autoPlay
             self.initialVolume = initialVolume
             self.startupDiagnosticsEnabled = startupDiagnosticsEnabled
@@ -85,9 +93,11 @@ public extension VLCVideoPlayer {
             playbackChildren: [PlaybackChild] = [],
             options: [String: Any] = [:],
             initialVolume: Int32? = nil,
-            startupDiagnosticsEnabled: Bool = false
+            startupDiagnosticsEnabled: Bool = false,
+            mediaURLProvider: (() -> URL)? = nil
         ) {
             self.url = url
+            self.mediaURLProvider = mediaURLProvider
             self.autoPlay = autoPlay
             self.initialVolume = initialVolume
             self.startupDiagnosticsEnabled = startupDiagnosticsEnabled
