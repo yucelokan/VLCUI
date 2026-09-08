@@ -78,5 +78,17 @@ public extension VLCVideoPlayer {
             sentBytes = stats.sentBytes.asInt
             sendBitrate = stats.sendBitrate
         }
+
+        /// Normalises the Objective-C wrapper while libVLC has no input stats.
+        /// Use this for every snapshot path; otherwise opening/state callbacks
+        /// can publish the same indeterminate counters as direct proxy polling.
+        init(player: VLCMediaPlayer, media: VLCMedia) {
+            switch player.state {
+            case .stopped, .opening, .ended, .error:
+                self.init()
+            default:
+                self.init(stats: media.statistics)
+            }
+        }
     }
 }

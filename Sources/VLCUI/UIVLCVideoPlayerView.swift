@@ -231,7 +231,7 @@ extension UIVLCVideoPlayerView {
             subtitleTracks: subtitleTracks,
             audioTracks: audioTracks,
             videoTracks: videoTracks,
-            statistics: .init(stats: media.statistics)
+            statistics: .init(player: player, media: media)
         )
     }
 }

@@ -44,18 +44,7 @@ public extension VLCVideoPlayer {
         public var statisticsSnapshot: VLCVideoPlayer.Statistics? {
             guard let player = mediaPlayer, let media = player.media else { return nil }
 
-            // VLCKit exposes VLCMedia.statistics as a non-optional value even
-            // though libvlc_media_get_stats() can report that no input statistics
-            // exist yet. In stopped/opening/terminal states its wrapper storage can
-            // therefore contain indeterminate counters. Those values must never be
-            // interpreted by startup recovery as network or decoder progress.
-            switch player.state {
-            case .stopped, .opening, .ended, .error:
-                return .init()
-            default:
-                break
-            }
-            return .init(stats: media.statistics)
+            return .init(player: player, media: media)
         }
         
         /// Captures a snapshot of the current video frame and returns it as UIImage
