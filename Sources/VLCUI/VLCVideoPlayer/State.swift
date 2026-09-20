@@ -9,5 +9,7 @@ public extension VLCVideoPlayer {
         case playing
         case paused
         case esAdded
+        /// Timeline/duration/seekability changed without an elementary-stream change.
+        case capabilitiesChanged
     }
 }

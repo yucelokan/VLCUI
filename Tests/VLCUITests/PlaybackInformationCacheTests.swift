@@ -81,6 +81,30 @@ final class PlaybackInformationCacheTests: XCTestCase {
         XCTAssertTrue(gate.observeTime(ticks: 1_500, generation: 8, isActuallyPlaying: true, detailsReady: true))
     }
 
+    func testPlayingGateAccumulatesSmallAndHalfSpeedTicks() {
+        var gate = VLCVideoPlayer.PlaybackPlayingGate()
+        gate.reset(generation: 30)
+        for ticks in [1_000, 1_050, 1_100, 1_150] {
+            XCTAssertFalse(gate.observeTime(
+                ticks: Int32(ticks), generation: 30,
+                isActuallyPlaying: true, detailsReady: true
+            ))
+        }
+        XCTAssertTrue(gate.observeTime(
+            ticks: 1_200, generation: 30,
+            isActuallyPlaying: true, detailsReady: true
+        ), "Sub-200ms callbacks must accumulate within the current playing epoch")
+    }
+
+    func testPlayingGateResetsForSeekDiscontinuity() {
+        var gate = VLCVideoPlayer.PlaybackPlayingGate()
+        gate.reset(generation: 31)
+        XCTAssertFalse(gate.observeTime(ticks: 100, generation: 31, isActuallyPlaying: true, detailsReady: true))
+        XCTAssertFalse(gate.observeTime(ticks: 20_000, generation: 31, isActuallyPlaying: true, detailsReady: true))
+        XCTAssertFalse(gate.observeTime(ticks: 20_100, generation: 31, isActuallyPlaying: true, detailsReady: true))
+        XCTAssertTrue(gate.observeTime(ticks: 20_200, generation: 31, isActuallyPlaying: true, detailsReady: true))
+    }
+
     func testPlayingGateCannotPublishFromPausedStateOrStaleGeneration() {
         var gate = VLCVideoPlayer.PlaybackPlayingGate()
         gate.reset(generation: 12)
@@ -108,7 +132,8 @@ final class PlaybackInformationCacheTests: XCTestCase {
         )
         XCTAssertTrue(cache.apply(discovered, generation: 21, discoveryComplete: true))
         XCTAssertTrue(cache.hasPlaybackDetails)
-        XCTAssertTrue(playing.observeTime(ticks: 700, generation: 21, isActuallyPlaying: true, detailsReady: cache.hasPlaybackDetails))
+        XCTAssertFalse(playing.observeTime(ticks: 700, generation: 21, isActuallyPlaying: true, detailsReady: cache.hasPlaybackDetails))
+        XCTAssertTrue(playing.observeTime(ticks: 900, generation: 21, isActuallyPlaying: true, detailsReady: cache.hasPlaybackDetails))
 
         let changed = makeInformation(
             configuration: configuration, generation: 21, audioIndex: 9, isSeekable: true
@@ -117,11 +142,56 @@ final class PlaybackInformationCacheTests: XCTestCase {
                       "Late seekability/track metadata must remain observable after playing")
     }
 
+    func testDisableOnlySnapshotIsNotDiscoveryReady() {
+        let configuration = VLCVideoPlayer.Configuration(url: URL(string: "https://example.com/live")!)
+        let disabled = MediaTrack(index: -1, title: "Disable")
+        var cache = VLCVideoPlayer.PlaybackInformationCache()
+        cache.reset(configuration: configuration, generation: 40)
+        let disableOnly = VLCVideoPlayer.PlaybackInformation(
+            sessionGeneration: 40,
+            startConfiguration: configuration,
+            position: 0,
+            length: 0,
+            isSeekable: false,
+            playbackRate: 1,
+            videoSize: .zero,
+            currentSubtitleTrack: disabled,
+            currentAudioTrack: disabled,
+            currentVideoTrack: disabled,
+            subtitleTracks: [disabled],
+            audioTracks: [disabled],
+            videoTracks: [],
+            statistics: .init()
+        )
+        _ = cache.apply(disableOnly, generation: 40, discoveryComplete: true)
+        XCTAssertFalse(cache.hasPlaybackDetails)
+    }
+
+    func testCapabilityChangesRemainIndependentFromTracks() {
+        let configuration = VLCVideoPlayer.Configuration(url: URL(string: "https://example.com/vod")!)
+        var cache = VLCVideoPlayer.PlaybackInformationCache()
+        cache.reset(configuration: configuration, generation: 41)
+        let unavailable = makeInformation(
+            configuration: configuration, generation: 41,
+            audioIndex: 4, isSeekable: false, length: 0
+        )
+        _ = cache.applyChanges(unavailable, generation: 41, discoveryComplete: true)
+        let available = makeInformation(
+            configuration: configuration, generation: 41,
+            audioIndex: 4, isSeekable: true, length: 30_000
+        )
+        let becameAvailable = cache.applyChanges(available, generation: 41)
+        XCTAssertEqual(becameAvailable, .init(tracks: false, capabilities: true))
+        let becameUnavailable = cache.applyChanges(unavailable, generation: 41)
+        XCTAssertEqual(becameUnavailable, .init(tracks: false, capabilities: true))
+    }
+
     private func makeInformation(
         configuration: VLCVideoPlayer.Configuration,
         generation: UInt64,
         audioIndex: Int,
-        isSeekable: Bool = true
+        isSeekable: Bool = true,
+        length: Int = 1_000
     ) -> VLCVideoPlayer.PlaybackInformation {
         let disabled = MediaTrack(index: -1, title: "Disable")
         let audio = MediaTrack(index: audioIndex, title: "Audio")
@@ -129,7 +199,7 @@ final class PlaybackInformationCacheTests: XCTestCase {
             sessionGeneration: generation,
             startConfiguration: configuration,
             position: 0.5,
-            length: 1_000,
+            length: length,
             isSeekable: isSeekable,
             playbackRate: 1,
             videoSize: CGSize(width: 1920, height: 1080),

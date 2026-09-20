@@ -111,6 +111,36 @@ public extension VLCVideoPlayer {
                 statistics: statistics
             )
         }
+
+        func updatingCapabilities(
+            position: Float,
+            length: Int,
+            isSeekable: Bool,
+            playbackRate: Float
+        ) -> Self {
+            .init(
+                sessionGeneration: sessionGeneration,
+                startConfiguration: startConfiguration,
+                position: position,
+                length: length,
+                isSeekable: isSeekable,
+                playbackRate: playbackRate,
+                videoSize: videoSize,
+                currentSubtitleTrack: currentSubtitleTrack,
+                currentAudioTrack: currentAudioTrack,
+                currentVideoTrack: currentVideoTrack,
+                subtitleTracks: subtitleTracks,
+                audioTracks: audioTracks,
+                videoTracks: videoTracks,
+                statistics: statistics
+            )
+        }
+    }
+
+    struct PlaybackInformationChanges: Equatable {
+        let tracks: Bool
+        let capabilities: Bool
+        var any: Bool { tracks || capabilities }
     }
 
     /// Main-thread cache used by delegate callbacks. It never calls MobileVLCKit;
@@ -152,35 +182,52 @@ public extension VLCVideoPlayer {
             return updated
         }
 
+        mutating func applyChanges(
+            _ snapshot: PlaybackInformation,
+            generation: UInt64,
+            discoveryComplete: Bool = false
+        ) -> PlaybackInformationChanges? {
+            guard information?.sessionGeneration == generation,
+                  snapshot.sessionGeneration == generation else { return nil }
+            let previous = information
+            information = snapshot
+            // Empty snapshots captured before VLC's ES-added event are not
+            // discovery evidence. A synthetic Disable-only list is teardown, not
+            // a playable elementary stream. Explicit current-generation ES-added
+            // remains valid for unusual audio-only/live inputs whose wrapper lists
+            // are all empty even though VLC reported real stream discovery.
+            let allTracks = snapshot.subtitleTracks + snapshot.audioTracks + snapshot.videoTracks
+            let hasRealTrack = allTracks.contains { $0.index >= 0 }
+            let hasOnlyEmptyLists = allTracks.isEmpty
+            let hasPositiveVideoSize = snapshot.videoSize.width > 0 && snapshot.videoSize.height > 0
+            hasPlaybackDetails = hasPlaybackDetails
+                || hasRealTrack
+                || hasPositiveVideoSize
+                || (discoveryComplete && hasOnlyEmptyLists)
+            let tracksChanged = previous?.subtitleTracks != snapshot.subtitleTracks
+                || previous?.audioTracks != snapshot.audioTracks
+                || previous?.videoTracks != snapshot.videoTracks
+                || previous?.currentSubtitleTrack != snapshot.currentSubtitleTrack
+                || previous?.currentAudioTrack != snapshot.currentAudioTrack
+                || previous?.currentVideoTrack != snapshot.currentVideoTrack
+            let capabilitiesChanged = previous?.length != snapshot.length
+                || previous?.isSeekable != snapshot.isSeekable
+                || previous?.playbackRate != snapshot.playbackRate
+                || previous?.videoSize != snapshot.videoSize
+            return .init(tracks: tracksChanged, capabilities: capabilitiesChanged)
+        }
+
         @discardableResult
         mutating func apply(
             _ snapshot: PlaybackInformation,
             generation: UInt64,
             discoveryComplete: Bool = false
         ) -> Bool {
-            guard information?.sessionGeneration == generation,
-                  snapshot.sessionGeneration == generation else { return false }
-            let previous = information
-            information = snapshot
-            // Empty snapshots captured before VLC's ES-added event are not
-            // discovery evidence. Explicit ES-added remains valid for unusual
-            // audio-only/live inputs whose wrapper track arrays may be empty.
-            hasPlaybackDetails = hasPlaybackDetails
-                || discoveryComplete
-                || !snapshot.subtitleTracks.isEmpty
-                || !snapshot.audioTracks.isEmpty
-                || !snapshot.videoTracks.isEmpty
-                || snapshot.videoSize != .zero
-            return previous?.subtitleTracks != snapshot.subtitleTracks
-                || previous?.audioTracks != snapshot.audioTracks
-                || previous?.videoTracks != snapshot.videoTracks
-                || previous?.currentSubtitleTrack != snapshot.currentSubtitleTrack
-                || previous?.currentAudioTrack != snapshot.currentAudioTrack
-                || previous?.currentVideoTrack != snapshot.currentVideoTrack
-                || previous?.length != snapshot.length
-                || previous?.isSeekable != snapshot.isSeekable
-                || previous?.playbackRate != snapshot.playbackRate
-                || previous?.videoSize != snapshot.videoSize
+            applyChanges(
+                snapshot,
+                generation: generation,
+                discoveryComplete: discoveryComplete
+            )?.any == true
         }
 
         mutating func apply(_ statistics: Statistics, generation: UInt64) -> Bool {
@@ -193,6 +240,7 @@ public extension VLCVideoPlayer {
 
     enum PlaybackSnapshotKind: Int, Equatable {
         case statistics
+        case capabilities
         case details
         case discoveredDetails
     }
@@ -233,18 +281,19 @@ public extension VLCVideoPlayer {
     /// historical tick can never turn buffering/paused/stopped back into playing.
     struct PlaybackPlayingGate {
         private var generation: UInt64?
-        private var lastTicks: Int32?
+        private var epochBaselineTicks: Int32?
         private var hasPublished = false
+        private let discontinuityThreshold: Int32 = 2_000
 
         mutating func reset(generation: UInt64) {
             self.generation = generation
-            lastTicks = nil
+            epochBaselineTicks = nil
             hasPublished = false
         }
 
         mutating func noteNonPlaying(generation: UInt64) {
             guard self.generation == generation else { return }
-            lastTicks = nil
+            epochBaselineTicks = nil
             hasPublished = false
         }
 
@@ -255,13 +304,22 @@ public extension VLCVideoPlayer {
             detailsReady: Bool
         ) -> Bool {
             guard self.generation == generation else { return false }
-            let previous = lastTicks
-            lastTicks = ticks
-            guard isActuallyPlaying,
-                  detailsReady,
-                  !hasPublished,
-                  let previous,
-                  abs(ticks - previous) >= 200 else { return false }
+            guard isActuallyPlaying, detailsReady else {
+                epochBaselineTicks = nil
+                hasPublished = false
+                return false
+            }
+            guard !hasPublished else { return false }
+            guard let baseline = epochBaselineTicks else {
+                epochBaselineTicks = ticks
+                return false
+            }
+            let progress = ticks - baseline
+            if progress < 0 || progress > discontinuityThreshold {
+                epochBaselineTicks = ticks
+                return false
+            }
+            guard progress >= 200 else { return false }
             hasPublished = true
             return true
         }

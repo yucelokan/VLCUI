@@ -38,8 +38,10 @@ public class UIVLCVideoPlayerView: _PlatformView {
     private var playbackSnapshotGate = VLCVideoPlayer.PlaybackSnapshotGate()
     private var playbackPlayingGate = VLCVideoPlayer.PlaybackPlayingGate()
     private var lastStatisticsRefreshRequest: TimeInterval = 0
+    private var lastCapabilitiesRefreshRequest: TimeInterval = 0
 
     private static let statisticsRefreshInterval: TimeInterval = 1
+    private static let capabilitiesRefreshInterval: TimeInterval = 1
 
     // Note: necessary as the configuration values have to be set
     //       after streams have been added and playback starts for
@@ -269,6 +271,7 @@ public class UIVLCVideoPlayerView: _PlatformView {
         playbackSnapshotGate.invalidate()
         playbackPlayingGate.reset(generation: generation)
         lastStatisticsRefreshRequest = 0
+        lastCapabilitiesRefreshRequest = 0
         lastPlayerTicks = 0
         lastPlayerState = .opening
         startupClock = VLCStartupClock()
@@ -341,6 +344,7 @@ extension UIVLCVideoPlayerView {
         playbackInformationCache.invalidate()
         playbackSnapshotGate.invalidate()
         lastStatisticsRefreshRequest = 0
+        lastCapabilitiesRefreshRequest = 0
     }
 
     private func cachedPlaybackInformation(ticks: Int32) -> VLCVideoPlayer.PlaybackInformation? {
@@ -352,6 +356,13 @@ extension UIVLCVideoPlayerView {
         guard now - lastStatisticsRefreshRequest >= Self.statisticsRefreshInterval else { return }
         lastStatisticsRefreshRequest = now
         requestPlaybackSnapshotRefresh(.statistics)
+    }
+
+    private func requestCapabilitiesRefreshIfNeeded() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastCapabilitiesRefreshRequest >= Self.capabilitiesRefreshInterval else { return }
+        lastCapabilitiesRefreshRequest = now
+        requestPlaybackSnapshotRefresh(.capabilities)
     }
 
     private func requestPlaybackSnapshotRefresh(_ requestedKind: VLCVideoPlayer.PlaybackSnapshotKind) {
@@ -407,6 +418,33 @@ extension UIVLCVideoPlayerView {
                     statistics: .init(player: player, media: media),
                     player: player,
                     generation: generation,
+                    discoveryComplete: false
+                )
+            }
+        case .capabilities:
+            // One bounded timeline/capability group per second. This is separate
+            // from track discovery, so late duration/seekability changes cannot
+            // be lost when VLC emits no further ES-added event.
+            DispatchQueue.main.async { [weak self, weak player, weak media] in
+                guard let self, let player, let media,
+                      self.isCurrent(player: player, generation: generation),
+                      let cached = self.playbackInformationCache.information else {
+                    self?.finishPlaybackSnapshotRefresh(
+                        details: nil, statistics: cachedStatistics,
+                        player: player, generation: generation,
+                        discoveryComplete: false
+                    )
+                    return
+                }
+                let snapshot = cached.updatingCapabilities(
+                    position: player.position,
+                    length: media.length.intValue.asInt,
+                    isSeekable: player.isSeekable,
+                    playbackRate: player.rate
+                )
+                self.finishPlaybackSnapshotRefresh(
+                    details: snapshot, statistics: cachedStatistics,
+                    player: player, generation: generation,
                     discoveryComplete: false
                 )
             }
@@ -543,10 +581,10 @@ extension UIVLCVideoPlayerView {
     ) {
         let isCurrentSession = player != nil && player === currentMediaPlayer
             && generation == currentSessionGeneration
-        var tracksChanged = false
+        var changes: VLCVideoPlayer.PlaybackInformationChanges?
         if isCurrentSession {
             if let details {
-                tracksChanged = playbackInformationCache.apply(
+                changes = playbackInformationCache.applyChanges(
                     details,
                     generation: generation,
                     discoveryComplete: discoveryComplete
@@ -556,7 +594,10 @@ extension UIVLCVideoPlayerView {
             }
             if let info = playbackInformationCache.information {
                 logStartupMilestones(player: player!, info: info)
-                if tracksChanged {
+                if changes?.capabilities == true {
+                    onStateUpdated(.capabilitiesChanged, info)
+                }
+                if changes?.tracks == true {
                     onStateUpdated(.esAdded, info)
                 }
             }
@@ -582,6 +623,7 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         // instance mutate the shared state/configuration of the replacement player.
         let currentTicks = player.time.intValue
         guard let playbackInformation = cachedPlaybackInformation(ticks: currentTicks) else { return }
+        requestCapabilitiesRefreshIfNeeded()
         if !hasSetConfiguration {
             setConfigurationValues(
                 with: player,
