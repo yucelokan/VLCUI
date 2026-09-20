@@ -36,6 +36,7 @@ public class UIVLCVideoPlayerView: _PlatformView {
     private var globalHandoverWaitGeneration: UInt64?
     private var playbackInformationCache = VLCVideoPlayer.PlaybackInformationCache()
     private var playbackSnapshotGate = VLCVideoPlayer.PlaybackSnapshotGate()
+    private var playbackPlayingGate = VLCVideoPlayer.PlaybackPlayingGate()
     private var lastStatisticsRefreshRequest: TimeInterval = 0
 
     private static let statisticsRefreshInterval: TimeInterval = 1
@@ -266,6 +267,7 @@ public class UIVLCVideoPlayerView: _PlatformView {
         proxy?.mediaPlayer = newMediaPlayer
         playbackInformationCache.reset(configuration: newConfiguration, generation: generation)
         playbackSnapshotGate.invalidate()
+        playbackPlayingGate.reset(generation: generation)
         lastStatisticsRefreshRequest = 0
         lastPlayerTicks = 0
         lastPlayerState = .opening
@@ -331,8 +333,8 @@ extension UIVLCVideoPlayerView {
         return playbackInformationCache.information?.statistics
     }
 
-    func requestPlaybackDetailsRefresh() {
-        requestPlaybackSnapshotRefresh(.details)
+    func requestPlaybackDetailsRefresh(discoveryComplete: Bool = false) {
+        requestPlaybackSnapshotRefresh(discoveryComplete ? .discoveredDetails : .details)
     }
 
     private func invalidatePlaybackInformationCache() {
@@ -375,45 +377,160 @@ extension UIVLCVideoPlayerView {
         generation: UInt64,
         cachedStatistics: VLCVideoPlayer.Statistics
     ) {
-        // MobileVLCKit 3.7.2 exposes these wrapper properties as nonatomic on
-        // iOS. Capture them on the UI thread after the delegate callback has
-        // returned; never race a background read against stop/deallocation.
+        switch kind {
+        case .details, .discoveredDetails:
+            capturePlaybackDetails(
+                stage: .subtitles,
+                draft: .init(),
+                player: player,
+                media: media,
+                configuration: configuration,
+                generation: generation,
+                statistics: cachedStatistics,
+                discoveryComplete: kind == .discoveredDetails
+            )
+        case .statistics:
+            // Statistics are demand-driven by Proxy.statisticsSnapshot and are
+            // never part of the playing/time callback critical path.
+            DispatchQueue.main.async { [weak self, weak player, weak media] in
+                guard let self, let player, let media,
+                      self.isCurrent(player: player, generation: generation) else {
+                    self?.finishPlaybackSnapshotRefresh(
+                        details: nil, statistics: cachedStatistics,
+                        player: player, generation: generation,
+                        discoveryComplete: false
+                    )
+                    return
+                }
+                self.finishPlaybackSnapshotRefresh(
+                    details: nil,
+                    statistics: .init(player: player, media: media),
+                    player: player,
+                    generation: generation,
+                    discoveryComplete: false
+                )
+            }
+        }
+    }
+
+    private enum PlaybackDetailStage { case subtitles, audio, video, timeline, videoSize }
+
+    private struct PlaybackDetailsDraft {
+        var subtitleTracks: [MediaTrack] = []
+        var audioTracks: [MediaTrack] = []
+        var videoTracks: [MediaTrack] = []
+        var currentSubtitleTrack = MediaTrack(index: -1, title: "Disable")
+        var currentAudioTrack = MediaTrack(index: -1, title: "Disable")
+        var currentVideoTrack = MediaTrack(index: -1, title: "Disable")
+        var position: Float = 0
+        var length = 0
+        var isSeekable = false
+        var playbackRate: Float = 1
+    }
+
+    private func isCurrent(player: VLCMediaPlayer, generation: UInt64) -> Bool {
+        player === currentMediaPlayer && generation == currentSessionGeneration
+    }
+
+    /// MobileVLCKit 3.7.2 marks these wrapper properties nonatomic on iOS.
+    /// Keep every access on main, but read only one demand-specific group per
+    /// run-loop turn. This bounds the work and removes the former full getter
+    /// graph from state/time callbacks and from any single main-queue block.
+    private func capturePlaybackDetails(
+        stage: PlaybackDetailStage,
+        draft: PlaybackDetailsDraft,
+        player: VLCMediaPlayer,
+        media: VLCMedia,
+        configuration: VLCVideoPlayer.Configuration,
+        generation: UInt64,
+        statistics: VLCVideoPlayer.Statistics,
+        discoveryComplete: Bool
+    ) {
         DispatchQueue.main.async { [weak self, weak player, weak media] in
             guard let self, let player, let media,
-                  player === self.currentMediaPlayer,
-                  generation == self.currentSessionGeneration else {
+                  self.isCurrent(player: player, generation: generation) else {
                 self?.finishPlaybackSnapshotRefresh(
-                    details: nil,
-                    statistics: cachedStatistics,
-                    player: player,
-                    generation: generation
+                    details: nil, statistics: statistics,
+                    player: player, generation: generation,
+                    discoveryComplete: false
                 )
                 return
             }
-            let details: VLCVideoPlayer.PlaybackInformation?
-            let statistics: VLCVideoPlayer.Statistics
-            switch kind {
-            case .details:
-                let snapshot = Self.readPlaybackInformation(
+            var next = draft
+            let nextStage: PlaybackDetailStage?
+            switch stage {
+            case .subtitles:
+                let tracks = zip(
+                    player.videoSubTitlesIndexes as? [Int] ?? [],
+                    player.videoSubTitlesNames as? [String] ?? []
+                ).map { MediaTrack(index: $0, title: $1) }
+                next.subtitleTracks = tracks
+                next.currentSubtitleTrack = tracks.first(where: {
+                    $0.index == player.currentVideoSubTitleIndex.asInt
+                }) ?? .init(index: -1, title: "Disable")
+                nextStage = .audio
+            case .audio:
+                let tracks = zip(
+                    player.audioTrackIndexes as? [Int] ?? [],
+                    player.audioTrackNames as? [String] ?? []
+                ).map { MediaTrack(index: $0, title: $1) }
+                next.audioTracks = tracks
+                next.currentAudioTrack = tracks.first(where: {
+                    $0.index == player.currentAudioTrackIndex.asInt
+                }) ?? .init(index: -1, title: "Disable")
+                nextStage = .video
+            case .video:
+                let tracks = zip(
+                    player.videoTrackIndexes as? [Int] ?? [],
+                    player.videoTrackNames as? [String] ?? []
+                ).map { MediaTrack(index: $0, title: $1) }
+                next.videoTracks = tracks
+                next.currentVideoTrack = tracks.first(where: {
+                    $0.index == player.currentVideoTrackIndex.asInt
+                }) ?? .init(index: -1, title: "Disable")
+                nextStage = .timeline
+            case .timeline:
+                next.position = player.position
+                next.length = media.length.intValue.asInt
+                next.isSeekable = player.isSeekable
+                next.playbackRate = player.rate
+                nextStage = .videoSize
+            case .videoSize:
+                let snapshot = VLCVideoPlayer.PlaybackInformation(
+                    sessionGeneration: generation,
+                    startConfiguration: configuration,
+                    position: next.position,
+                    length: next.length,
+                    isSeekable: next.isSeekable,
+                    playbackRate: next.playbackRate,
+                    videoSize: player.videoSize,
+                    currentSubtitleTrack: next.currentSubtitleTrack,
+                    currentAudioTrack: next.currentAudioTrack,
+                    currentVideoTrack: next.currentVideoTrack,
+                    subtitleTracks: next.subtitleTracks,
+                    audioTracks: next.audioTracks,
+                    videoTracks: next.videoTracks,
+                    statistics: statistics
+                )
+                self.finishPlaybackSnapshotRefresh(
+                    details: snapshot, statistics: statistics,
+                    player: player, generation: generation,
+                    discoveryComplete: discoveryComplete
+                )
+                nextStage = nil
+            }
+            if let nextStage {
+                self.capturePlaybackDetails(
+                    stage: nextStage,
+                    draft: next,
                     player: player,
                     media: media,
                     configuration: configuration,
                     generation: generation,
-                    statistics: cachedStatistics
+                    statistics: statistics,
+                    discoveryComplete: discoveryComplete
                 )
-                details = snapshot
-                statistics = snapshot.statistics
-            case .statistics:
-                details = nil
-                statistics = .init(player: player, media: media)
             }
-
-            self.finishPlaybackSnapshotRefresh(
-                details: details,
-                statistics: statistics,
-                player: player,
-                generation: generation
-            )
         }
     }
 
@@ -421,14 +538,19 @@ extension UIVLCVideoPlayerView {
         details: VLCVideoPlayer.PlaybackInformation?,
         statistics: VLCVideoPlayer.Statistics,
         player: VLCMediaPlayer?,
-        generation: UInt64
+        generation: UInt64,
+        discoveryComplete: Bool
     ) {
         let isCurrentSession = player != nil && player === currentMediaPlayer
             && generation == currentSessionGeneration
         var tracksChanged = false
         if isCurrentSession {
             if let details {
-                tracksChanged = playbackInformationCache.apply(details, generation: generation)
+                tracksChanged = playbackInformationCache.apply(
+                    details,
+                    generation: generation,
+                    discoveryComplete: discoveryComplete
+                )
             } else {
                 _ = playbackInformationCache.apply(statistics, generation: generation)
             }
@@ -437,7 +559,6 @@ extension UIVLCVideoPlayerView {
                 if tracksChanged {
                     onStateUpdated(.esAdded, info)
                 }
-                publishPlayingIfReady(info)
             }
         }
 
@@ -446,54 +567,6 @@ extension UIVLCVideoPlayerView {
         }
     }
 
-    private static func readPlaybackInformation(
-        player: VLCMediaPlayer,
-        media: VLCMedia,
-        configuration: VLCVideoPlayer.Configuration,
-        generation: UInt64,
-        statistics: VLCVideoPlayer.Statistics
-    ) -> VLCVideoPlayer.PlaybackInformation {
-
-        let subtitleIndexes = player.videoSubTitlesIndexes as? [Int] ?? []
-        let subtitleNames = player.videoSubTitlesNames as? [String] ?? []
-
-        let audioIndexes = player.audioTrackIndexes as? [Int] ?? []
-        let audioNames = player.audioTrackNames as? [String] ?? []
-
-        let videoIndexes = player.videoTrackIndexes as? [Int] ?? []
-        let videoNames = player.videoTrackNames as? [String]
-
-        let subtitleTracks = zip(subtitleIndexes, subtitleNames).map { MediaTrack(index: $0, title: $1) }
-        let audioTracks = zip(audioIndexes, audioNames).map { MediaTrack(index: $0, title: $1) }
-        let videoTracks = zip(videoIndexes, videoNames ?? []).map { MediaTrack(index: $0, title: $1) }
-
-        let currentSubtitleTrack: MediaTrack = subtitleTracks
-            .first(where: { $0.index == player.currentVideoSubTitleIndex.asInt })
-            .chaining(.init(index: -1, title: "Disable"))
-        let currentAudioTrack: MediaTrack = audioTracks
-            .first(where: { $0.index == player.currentAudioTrackIndex.asInt })
-            .chaining(.init(index: -1, title: "Disable"))
-        let currentVideoTrack: MediaTrack = videoTracks
-            .first(where: { $0.index == player.currentVideoTrackIndex.asInt })
-            .chaining(.init(index: -1, title: "Disable"))
-
-        return VLCVideoPlayer.PlaybackInformation(
-            sessionGeneration: generation,
-            startConfiguration: configuration,
-            position: player.position,
-            length: media.length.intValue.asInt,
-            isSeekable: player.isSeekable,
-            playbackRate: player.rate,
-            videoSize: player.videoSize,
-            currentSubtitleTrack: currentSubtitleTrack,
-            currentAudioTrack: currentAudioTrack,
-            currentVideoTrack: currentVideoTrack,
-            subtitleTracks: subtitleTracks,
-            audioTracks: audioTracks,
-            videoTracks: videoTracks,
-            statistics: statistics
-        )
-    }
 }
 
 // MARK: VLCMediaPlayerDelegate
@@ -509,8 +582,6 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         // instance mutate the shared state/configuration of the replacement player.
         let currentTicks = player.time.intValue
         guard let playbackInformation = cachedPlaybackInformation(ticks: currentTicks) else { return }
-        requestStatisticsRefreshIfNeeded()
-
         if !hasSetConfiguration {
             setConfigurationValues(
                 with: player,
@@ -524,17 +595,19 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         }
 
         // Set playing state
-        if lastPlayerState != .playing,
-           abs(currentTicks - lastPlayerTicks) >= 200
-        {
-            lastPlayerTicks = currentTicks
-            if playbackInformationCache.hasPlaybackDetails {
-                onStateUpdated(.playing, playbackInformation)
-                lastPlayerState = .playing
-            } else {
-                requestPlaybackDetailsRefresh()
-            }
+        let isActuallyPlaying = player.state == .playing
+        if playbackPlayingGate.observeTime(
+            ticks: currentTicks,
+            generation: playbackInformation.sessionGeneration,
+            isActuallyPlaying: isActuallyPlaying,
+            detailsReady: playbackInformationCache.hasPlaybackDetails
+        ) {
+            onStateUpdated(.playing, playbackInformation)
+            lastPlayerState = .playing
+        } else if !playbackInformationCache.hasPlaybackDetails {
+            requestPlaybackDetailsRefresh()
         }
+        lastPlayerTicks = currentTicks
 
         // Replay
         if configuration.replay,
@@ -557,10 +630,11 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         guard let playbackInformation = playbackInformationCache.information else { return }
 
         let wrappedState = VLCVideoPlayer.State(rawValue: playerState.rawValue) ?? .error
-        if wrappedState == .opening || wrappedState == .buffering || wrappedState == .esAdded {
-            requestPlaybackDetailsRefresh()
-            requestStatisticsRefreshIfNeeded()
+        if wrappedState == .esAdded {
+            requestPlaybackDetailsRefresh(discoveryComplete: true)
         }
+
+        playbackPlayingGate.noteNonPlaying(generation: playbackInformation.sessionGeneration)
 
         onStateUpdated(wrappedState, playbackInformation)
         lastPlayerState = playerState
@@ -582,14 +656,6 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
                 print("[VLCUI] startup milestone=\(name) player=\(ObjectIdentifier(player)) observed_ms=\(elapsed) count=\(count) volume=\(player.audio?.volume ?? -1)")
             }
         }
-    }
-
-    private func publishPlayingIfReady(_ information: VLCVideoPlayer.PlaybackInformation) {
-        guard playbackInformationCache.hasPlaybackDetails,
-              lastPlayerState != .playing,
-              abs(lastPlayerTicks) >= 200 else { return }
-        onStateUpdated(.playing, information)
-        lastPlayerState = .playing
     }
 
     private func setConfigurationValues(with player: VLCMediaPlayer, from configuration: VLCVideoPlayer.Configuration) {

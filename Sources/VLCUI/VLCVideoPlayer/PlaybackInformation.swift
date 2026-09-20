@@ -153,18 +153,34 @@ public extension VLCVideoPlayer {
         }
 
         @discardableResult
-        mutating func apply(_ snapshot: PlaybackInformation, generation: UInt64) -> Bool {
+        mutating func apply(
+            _ snapshot: PlaybackInformation,
+            generation: UInt64,
+            discoveryComplete: Bool = false
+        ) -> Bool {
             guard information?.sessionGeneration == generation,
                   snapshot.sessionGeneration == generation else { return false }
             let previous = information
             information = snapshot
-            hasPlaybackDetails = true
+            // Empty snapshots captured before VLC's ES-added event are not
+            // discovery evidence. Explicit ES-added remains valid for unusual
+            // audio-only/live inputs whose wrapper track arrays may be empty.
+            hasPlaybackDetails = hasPlaybackDetails
+                || discoveryComplete
+                || !snapshot.subtitleTracks.isEmpty
+                || !snapshot.audioTracks.isEmpty
+                || !snapshot.videoTracks.isEmpty
+                || snapshot.videoSize != .zero
             return previous?.subtitleTracks != snapshot.subtitleTracks
                 || previous?.audioTracks != snapshot.audioTracks
                 || previous?.videoTracks != snapshot.videoTracks
                 || previous?.currentSubtitleTrack != snapshot.currentSubtitleTrack
                 || previous?.currentAudioTrack != snapshot.currentAudioTrack
                 || previous?.currentVideoTrack != snapshot.currentVideoTrack
+                || previous?.length != snapshot.length
+                || previous?.isSeekable != snapshot.isSeekable
+                || previous?.playbackRate != snapshot.playbackRate
+                || previous?.videoSize != snapshot.videoSize
         }
 
         mutating func apply(_ statistics: Statistics, generation: UInt64) -> Bool {
@@ -178,6 +194,7 @@ public extension VLCVideoPlayer {
     enum PlaybackSnapshotKind: Int, Equatable {
         case statistics
         case details
+        case discoveredDetails
     }
 
     /// Coalesces refresh pressure to one active read plus at most one pending read.
@@ -209,6 +226,44 @@ public extension VLCVideoPlayer {
             isInFlight = false
             inFlightGeneration = nil
             pending = nil
+        }
+    }
+
+    /// Requires evidence from the current VLC session and transition. A cached
+    /// historical tick can never turn buffering/paused/stopped back into playing.
+    struct PlaybackPlayingGate {
+        private var generation: UInt64?
+        private var lastTicks: Int32?
+        private var hasPublished = false
+
+        mutating func reset(generation: UInt64) {
+            self.generation = generation
+            lastTicks = nil
+            hasPublished = false
+        }
+
+        mutating func noteNonPlaying(generation: UInt64) {
+            guard self.generation == generation else { return }
+            lastTicks = nil
+            hasPublished = false
+        }
+
+        mutating func observeTime(
+            ticks: Int32,
+            generation: UInt64,
+            isActuallyPlaying: Bool,
+            detailsReady: Bool
+        ) -> Bool {
+            guard self.generation == generation else { return false }
+            let previous = lastTicks
+            lastTicks = ticks
+            guard isActuallyPlaying,
+                  detailsReady,
+                  !hasPublished,
+                  let previous,
+                  abs(ticks - previous) >= 200 else { return false }
+            hasPublished = true
+            return true
         }
     }
 
