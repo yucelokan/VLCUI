@@ -27,5 +27,9 @@ let package = Package(
                 .product(name: "VLCKitSPM", package: "vlckit-spm")
             ]
         ),
+        .testTarget(
+            name: "VLCUITests",
+            dependencies: ["VLCUI"]
+        ),
     ]
 )

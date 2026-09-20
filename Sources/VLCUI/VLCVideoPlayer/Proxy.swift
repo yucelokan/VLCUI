@@ -14,6 +14,7 @@ public extension VLCVideoPlayer {
 
         weak var mediaPlayer: VLCMediaPlayer?
         weak var videoPlayerView: UIVLCVideoPlayerView?
+        private weak var videoAdjustedPlayer: VLCMediaPlayer?
 
         @MainActor
         private var thumbnailHandlers = Set<ThumbnailHandler>()
@@ -33,7 +34,14 @@ public extension VLCVideoPlayer {
         
         /// Returns the current video size from VLC media player
         public var videoSize: CGSize {
-            return mediaPlayer?.videoSize ?? CGSize(width: 1920, height: 1080)
+            return videoPlayerView?.cachedVideoSize ?? CGSize(width: 1920, height: 1080)
+        }
+
+        /// Generation of the concrete VLCMediaPlayer currently bound to this proxy.
+        /// Nil means the player has been retired or has not been installed yet.
+        @MainActor
+        public var sessionGeneration: UInt64? {
+            videoPlayerView?.currentSessionGeneration
         }
 
         /// Current libVLC counters, independent of state/time delegate delivery.
@@ -42,9 +50,7 @@ public extension VLCVideoPlayer {
         /// never opens a second connection or requests metadata parsing.
         @MainActor
         public var statisticsSnapshot: VLCVideoPlayer.Statistics? {
-            guard let player = mediaPlayer, let media = player.media else { return nil }
-
-            return .init(player: player, media: media)
+            videoPlayerView?.cachedStatisticsSnapshot
         }
 
         /// Privacy-safe HTTP phase information for the actual player instance.
@@ -204,6 +210,10 @@ public extension VLCVideoPlayer {
             guard let mediaPlayer else { return }
             let newTrackIndex = mediaPlayer.subtitleTrackIndex(from: index)
             mediaPlayer.currentVideoSubTitleIndex = newTrackIndex.asInt32
+            let view = videoPlayerView
+            DispatchQueue.main.async { [weak view] in
+                view?.requestPlaybackDetailsRefresh()
+            }
         }
 
         /// Set the audio track index.
@@ -216,6 +226,10 @@ public extension VLCVideoPlayer {
             guard let mediaPlayer else { return }
             let newTrackIndex = mediaPlayer.audioTrackIndex(from: index)
             mediaPlayer.currentAudioTrackIndex = newTrackIndex.asInt32
+            let view = videoPlayerView
+            DispatchQueue.main.async { [weak view] in
+                view?.requestPlaybackDetailsRefresh()
+            }
         }
 
         /// Set the video track index.
@@ -225,6 +239,10 @@ public extension VLCVideoPlayer {
             guard let mediaPlayer else { return }
             let newTrackIndex = mediaPlayer.videoTrackIndex(from: index)
             mediaPlayer.currentVideoTrackIndex = newTrackIndex.asInt32
+            let view = videoPlayerView
+            DispatchQueue.main.async { [weak view] in
+                view?.requestPlaybackDetailsRefresh()
+            }
         }
 
         /// Set the subtitle delay
@@ -428,22 +446,26 @@ public extension VLCVideoPlayer {
             saturation: Float,
             gamma: Float
         ) {
-            guard let player = mediaPlayer else { return }
-            let filter = player.adjustFilter
-
             let isDefault = contrast == 1.0
                 && brightness == 1.0
                 && hue == 0.0
                 && saturation == 1.0
                 && gamma == 1.0
 
+            guard let player = mediaPlayer else { return }
+
             if isDefault {
-                if filter.isEnabled {
-                    _ = filter.resetParametersIfNeeded()
-                    filter.isEnabled = false
-                }
+                // A fresh/replacement VLC session already has the filter disabled.
+                // Only a player that this proxy previously adjusted needs a reset.
+                guard videoAdjustedPlayer === player else { return }
+                let filter = player.adjustFilter
+                _ = filter.resetParametersIfNeeded()
+                filter.isEnabled = false
+                videoAdjustedPlayer = nil
                 return
             }
+
+            let filter = player.adjustFilter
 
             filter.contrast.value = NSNumber(value: contrast)
             filter.brightness.value = NSNumber(value: brightness)
@@ -451,6 +473,7 @@ public extension VLCVideoPlayer {
             filter.saturation.value = NSNumber(value: saturation)
             filter.gamma.value = NSNumber(value: gamma)
             filter.isEnabled = true
+            videoAdjustedPlayer = player
         }
     }
 }

@@ -4,6 +4,9 @@ import VLCKitSPM
 public extension VLCVideoPlayer {
 
     struct PlaybackInformation {
+        /// Identifies the concrete VLCMediaPlayer instance that produced this snapshot.
+        /// A replacement, retry, or media switch always receives a new generation.
+        public let sessionGeneration: UInt64
         public let startConfiguration: VLCVideoPlayer.Configuration
         public let position: Float
         public let length: Int
@@ -20,6 +23,167 @@ public extension VLCVideoPlayer {
         public let videoTracks: [MediaTrack]
 
         public let statistics: Statistics
+
+        init(
+            sessionGeneration: UInt64,
+            startConfiguration: VLCVideoPlayer.Configuration,
+            position: Float,
+            length: Int,
+            isSeekable: Bool,
+            playbackRate: Float,
+            videoSize: CGSize,
+            currentSubtitleTrack: MediaTrack,
+            currentAudioTrack: MediaTrack,
+            currentVideoTrack: MediaTrack,
+            subtitleTracks: [MediaTrack],
+            audioTracks: [MediaTrack],
+            videoTracks: [MediaTrack],
+            statistics: Statistics
+        ) {
+            self.sessionGeneration = sessionGeneration
+            self.startConfiguration = startConfiguration
+            self.position = position
+            self.length = length
+            self.isSeekable = isSeekable
+            self.playbackRate = playbackRate
+            self.videoSize = videoSize
+            self.currentSubtitleTrack = currentSubtitleTrack
+            self.currentAudioTrack = currentAudioTrack
+            self.currentVideoTrack = currentVideoTrack
+            self.subtitleTracks = subtitleTracks
+            self.audioTracks = audioTracks
+            self.videoTracks = videoTracks
+            self.statistics = statistics
+        }
+
+        func updatingTimeline(ticks: Int32) -> Self {
+            let nextPosition = length > 0
+                ? min(1, max(0, Float(ticks) / Float(length)))
+                : position
+            return .init(
+                sessionGeneration: sessionGeneration,
+                startConfiguration: startConfiguration,
+                position: nextPosition,
+                length: length,
+                isSeekable: isSeekable,
+                playbackRate: playbackRate,
+                videoSize: videoSize,
+                currentSubtitleTrack: currentSubtitleTrack,
+                currentAudioTrack: currentAudioTrack,
+                currentVideoTrack: currentVideoTrack,
+                subtitleTracks: subtitleTracks,
+                audioTracks: audioTracks,
+                videoTracks: videoTracks,
+                statistics: statistics
+            )
+        }
+
+        func updatingStatistics(_ statistics: Statistics) -> Self {
+            .init(
+                sessionGeneration: sessionGeneration,
+                startConfiguration: startConfiguration,
+                position: position,
+                length: length,
+                isSeekable: isSeekable,
+                playbackRate: playbackRate,
+                videoSize: videoSize,
+                currentSubtitleTrack: currentSubtitleTrack,
+                currentAudioTrack: currentAudioTrack,
+                currentVideoTrack: currentVideoTrack,
+                subtitleTracks: subtitleTracks,
+                audioTracks: audioTracks,
+                videoTracks: videoTracks,
+                statistics: statistics
+            )
+        }
+    }
+
+    /// Main-thread cache used by delegate callbacks. It never calls MobileVLCKit;
+    /// expensive detail snapshots are applied only when their player generation matches.
+    struct PlaybackInformationCache {
+        private(set) var information: PlaybackInformation?
+
+        mutating func reset(configuration: Configuration, generation: UInt64) {
+            let disabled = MediaTrack(index: -1, title: "Disable")
+            information = .init(
+                sessionGeneration: generation,
+                startConfiguration: configuration,
+                position: 0,
+                length: 0,
+                isSeekable: false,
+                playbackRate: 1,
+                videoSize: .zero,
+                currentSubtitleTrack: disabled,
+                currentAudioTrack: disabled,
+                currentVideoTrack: disabled,
+                subtitleTracks: [],
+                audioTracks: [],
+                videoTracks: [],
+                statistics: .init()
+            )
+        }
+
+        mutating func invalidate() {
+            information = nil
+        }
+
+        mutating func snapshot(ticks: Int32) -> PlaybackInformation? {
+            guard let current = information else { return nil }
+            let updated = current.updatingTimeline(ticks: ticks)
+            information = updated
+            return updated
+        }
+
+        @discardableResult
+        mutating func apply(_ snapshot: PlaybackInformation, generation: UInt64) -> Bool {
+            guard information?.sessionGeneration == generation,
+                  snapshot.sessionGeneration == generation else { return false }
+            let previous = information
+            information = snapshot
+            return previous?.subtitleTracks != snapshot.subtitleTracks
+                || previous?.audioTracks != snapshot.audioTracks
+                || previous?.videoTracks != snapshot.videoTracks
+                || previous?.currentSubtitleTrack != snapshot.currentSubtitleTrack
+                || previous?.currentAudioTrack != snapshot.currentAudioTrack
+                || previous?.currentVideoTrack != snapshot.currentVideoTrack
+        }
+
+        mutating func apply(_ statistics: Statistics, generation: UInt64) -> Bool {
+            guard let current = information,
+                  current.sessionGeneration == generation else { return false }
+            information = current.updatingStatistics(statistics)
+            return true
+        }
+    }
+
+    enum PlaybackSnapshotKind: Int, Equatable {
+        case statistics
+        case details
+    }
+
+    /// Coalesces refresh pressure to one active read plus at most one pending read.
+    struct PlaybackSnapshotGate {
+        private(set) var isInFlight = false
+        private var pending: PlaybackSnapshotKind?
+
+        mutating func request(_ kind: PlaybackSnapshotKind) -> PlaybackSnapshotKind? {
+            guard !isInFlight else {
+                if pending == nil || kind.rawValue > pending!.rawValue { pending = kind }
+                return nil
+            }
+            isInFlight = true
+            return kind
+        }
+
+        mutating func complete() -> PlaybackSnapshotKind? {
+            isInFlight = false
+            defer { pending = nil }
+            return pending
+        }
+
+        mutating func invalidate() {
+            pending = nil
+        }
     }
 
     struct Statistics {
