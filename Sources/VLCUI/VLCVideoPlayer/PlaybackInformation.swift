@@ -3,6 +3,21 @@ import VLCKitSPM
 
 public extension VLCVideoPlayer {
 
+    /// Process-wide identity for concrete VLC player sessions. SwiftUI can create
+    /// a replacement view before dismantling its predecessor, so a per-view
+    /// counter is not sufficient to reject late callbacks from the old player.
+    enum PlaybackSessionGeneration {
+        private static let lock = NSLock()
+        private nonisolated(unsafe) static var nextValue: UInt64 = 0
+
+        static func make() -> UInt64 {
+            lock.lock()
+            defer { lock.unlock() }
+            nextValue &+= 1
+            return nextValue
+        }
+    }
+
     struct PlaybackInformation {
         /// Identifies the concrete VLCMediaPlayer instance that produced this snapshot.
         /// A replacement, retry, or media switch always receives a new generation.
@@ -102,6 +117,7 @@ public extension VLCVideoPlayer {
     /// expensive detail snapshots are applied only when their player generation matches.
     struct PlaybackInformationCache {
         private(set) var information: PlaybackInformation?
+        private(set) var hasPlaybackDetails = false
 
         mutating func reset(configuration: Configuration, generation: UInt64) {
             let disabled = MediaTrack(index: -1, title: "Disable")
@@ -121,10 +137,12 @@ public extension VLCVideoPlayer {
                 videoTracks: [],
                 statistics: .init()
             )
+            hasPlaybackDetails = false
         }
 
         mutating func invalidate() {
             information = nil
+            hasPlaybackDetails = false
         }
 
         mutating func snapshot(ticks: Int32) -> PlaybackInformation? {
@@ -140,6 +158,7 @@ public extension VLCVideoPlayer {
                   snapshot.sessionGeneration == generation else { return false }
             let previous = information
             information = snapshot
+            hasPlaybackDetails = true
             return previous?.subtitleTracks != snapshot.subtitleTracks
                 || previous?.audioTracks != snapshot.audioTracks
                 || previous?.videoTracks != snapshot.videoTracks
@@ -164,24 +183,31 @@ public extension VLCVideoPlayer {
     /// Coalesces refresh pressure to one active read plus at most one pending read.
     struct PlaybackSnapshotGate {
         private(set) var isInFlight = false
+        private var inFlightGeneration: UInt64?
         private var pending: PlaybackSnapshotKind?
 
-        mutating func request(_ kind: PlaybackSnapshotKind) -> PlaybackSnapshotKind? {
+        mutating func request(_ kind: PlaybackSnapshotKind, generation: UInt64) -> PlaybackSnapshotKind? {
             guard !isInFlight else {
+                guard inFlightGeneration == generation else { return nil }
                 if pending == nil || kind.rawValue > pending!.rawValue { pending = kind }
                 return nil
             }
             isInFlight = true
+            inFlightGeneration = generation
             return kind
         }
 
-        mutating func complete() -> PlaybackSnapshotKind? {
+        mutating func complete(generation: UInt64) -> PlaybackSnapshotKind? {
+            guard inFlightGeneration == generation else { return nil }
             isInFlight = false
+            inFlightGeneration = nil
             defer { pending = nil }
             return pending
         }
 
         mutating func invalidate() {
+            isInFlight = false
+            inFlightGeneration = nil
             pending = nil
         }
     }

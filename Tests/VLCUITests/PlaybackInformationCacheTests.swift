@@ -31,12 +31,43 @@ final class PlaybackInformationCacheTests: XCTestCase {
     func testSnapshotGateBoundsAndPromotesPendingDetailRead() {
         var gate = VLCVideoPlayer.PlaybackSnapshotGate()
 
-        XCTAssertEqual(gate.request(.statistics), .statistics)
-        XCTAssertNil(gate.request(.statistics))
-        XCTAssertNil(gate.request(.details))
-        XCTAssertNil(gate.request(.statistics))
-        XCTAssertEqual(gate.complete(), .details)
-        XCTAssertEqual(gate.request(.details), .details)
+        XCTAssertEqual(gate.request(.statistics, generation: 7), .statistics)
+        XCTAssertNil(gate.request(.statistics, generation: 7))
+        XCTAssertNil(gate.request(.details, generation: 7))
+        XCTAssertNil(gate.request(.statistics, generation: 7))
+        XCTAssertEqual(gate.complete(generation: 7), .details)
+        XCTAssertEqual(gate.request(.details, generation: 7), .details)
+    }
+
+    func testSnapshotGateRejectsRetiredCompletion() {
+        var gate = VLCVideoPlayer.PlaybackSnapshotGate()
+        XCTAssertEqual(gate.request(.details, generation: 10), .details)
+        gate.invalidate()
+        XCTAssertEqual(gate.request(.statistics, generation: 11), .statistics)
+        XCTAssertNil(gate.complete(generation: 10))
+        XCTAssertTrue(gate.isInFlight)
+        XCTAssertNil(gate.request(.details, generation: 11))
+        XCTAssertEqual(gate.complete(generation: 11), .details)
+    }
+
+    func testProcessWideGenerationIsUniqueAcrossReplacementViews() {
+        let first = VLCVideoPlayer.PlaybackSessionGeneration.make()
+        let replacement = VLCVideoPlayer.PlaybackSessionGeneration.make()
+        XCTAssertNotEqual(first, replacement)
+        XCTAssertGreaterThan(replacement, first)
+    }
+
+    func testPlayingDetailsAreNotReadyUntilMatchingSnapshotArrives() {
+        let configuration = VLCVideoPlayer.Configuration(url: URL(string: "https://example.com/live")!)
+        var cache = VLCVideoPlayer.PlaybackInformationCache()
+        cache.reset(configuration: configuration, generation: 3)
+        XCTAssertFalse(cache.hasPlaybackDetails)
+
+        XCTAssertFalse(cache.apply(makeInformation(configuration: configuration, generation: 2, audioIndex: 4), generation: 2))
+        XCTAssertFalse(cache.hasPlaybackDetails)
+
+        XCTAssertTrue(cache.apply(makeInformation(configuration: configuration, generation: 3, audioIndex: 4), generation: 3))
+        XCTAssertTrue(cache.hasPlaybackDetails)
     }
 
     private func makeInformation(
