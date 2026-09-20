@@ -53,6 +53,14 @@ public extension VLCVideoPlayer {
             videoPlayerView?.cachedStatisticsSnapshot
         }
 
+        /// Requests a bounded asynchronous statistics acquisition. Completion is
+        /// published through `.statisticsChanged`; the cached return path is never
+        /// treated as fresh merely because a request was started.
+        @MainActor
+        public func refreshStatistics() {
+            videoPlayerView?.requestStatisticsRefresh()
+        }
+
         /// Privacy-safe HTTP phase information for the actual player instance.
         /// Requires `startupNetworkObservationEnabled`; reading it performs no I/O.
         @MainActor
@@ -144,10 +152,12 @@ public extension VLCVideoPlayer {
         @available(iOS, deprecated: 16.0, message: "Use `Duration` typed functions instead")
         @available(tvOS, deprecated: 16.0, message: "Use `Duration` typed functions instead")
         @available(macOS, deprecated: 13.0, message: "Use `Duration` typed functions instead")
+        @MainActor
         public func jumpForward(_ seconds: Int) {
             let remainingTime = -(mediaPlayer?.remainingTime?.intValue ?? 0)
 
             guard remainingTime > 0 else { return }
+            videoPlayerView?.resetPlayingEvidenceForSeek()
 
             if remainingTime < seconds.asInt32 * 1000 {
                 mediaPlayer?.time = mediaPlayer?.media?.length ?? VLCTime(int: 0)
@@ -160,8 +170,10 @@ public extension VLCVideoPlayer {
         @available(iOS, deprecated: 16.0, message: "Use `Duration` typed functions instead")
         @available(tvOS, deprecated: 16.0, message: "Use `Duration` typed functions instead")
         @available(macOS, deprecated: 13.0, message: "Use `Duration` typed functions instead")
+        @MainActor
         public func jumpBackward(_ seconds: Int) {
             let currentTime = mediaPlayer?.time.intValue ?? 0
+            videoPlayerView?.resetPlayingEvidenceForSeek()
 
             if seconds.asInt32 > currentTime {
                 mediaPlayer?.time = VLCTime(int: 0)
@@ -172,10 +184,12 @@ public extension VLCVideoPlayer {
 
         /// Jump forward a given duration.
         @available(iOS 16.0, macOS 13.0, tvOS 16.0, *)
+        @MainActor
         public func jumpForward(_ seconds: Duration) {
             let remainingTime = Duration.milliseconds(-(mediaPlayer?.remainingTime?.intValue ?? 0))
 
             guard remainingTime > .zero else { return }
+            videoPlayerView?.resetPlayingEvidenceForSeek()
 
             if remainingTime < seconds {
                 mediaPlayer?.time = mediaPlayer?.media?.length ?? VLCTime(int: 0)
@@ -186,8 +200,10 @@ public extension VLCVideoPlayer {
 
         /// Jump backward a given duration.
         @available(iOS 16.0, macOS 13.0, tvOS 16.0, *)
+        @MainActor
         public func jumpBackward(_ seconds: Duration) {
             let currentTime = Duration.milliseconds(mediaPlayer?.time.intValue ?? 0)
+            videoPlayerView?.resetPlayingEvidenceForSeek()
 
             if seconds > currentTime {
                 mediaPlayer?.time = VLCTime(int: 0)
@@ -274,11 +290,13 @@ public extension VLCVideoPlayer {
         @available(iOS, deprecated: 16.0, message: "Use `Duration` typed functions instead")
         @available(tvOS, deprecated: 16.0, message: "Use `Duration` typed functions instead")
         @available(macOS, deprecated: 13.0, message: "Use `Duration` typed functions instead")
+        @MainActor
         public func setTime(_ time: TimeSelector) {
             guard let mediaPlayer,
                   let media = mediaPlayer.media else { return }
 
             guard time.asTicks >= 0 && time.asTicks <= media.length.intValue else { return }
+            videoPlayerView?.resetPlayingEvidenceForSeek()
             mediaPlayer.time = VLCTime(int: time.asTicks.asInt32)
         }
 
@@ -296,12 +314,14 @@ public extension VLCVideoPlayer {
 
         /// Set the player time.
         @available(iOS 16.0, macOS 13.0, tvOS 16.0, *)
+        @MainActor
         public func setSeconds(_ seconds: Duration) {
             guard let mediaPlayer,
                   let media = mediaPlayer.media else { return }
 
             guard seconds <= media.duration else { return }
 
+            videoPlayerView?.resetPlayingEvidenceForSeek()
             mediaPlayer.time = VLCTime(int: Int32(seconds.milliseconds))
         }
 

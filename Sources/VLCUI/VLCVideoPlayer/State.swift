@@ -11,5 +11,7 @@ public extension VLCVideoPlayer {
         case esAdded
         /// Timeline/duration/seekability changed without an elementary-stream change.
         case capabilitiesChanged
+        /// A completed, generation-valid libVLC statistics acquisition.
+        case statisticsChanged
     }
 }

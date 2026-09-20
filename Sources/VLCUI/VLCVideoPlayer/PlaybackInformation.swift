@@ -243,6 +243,30 @@ public extension VLCVideoPlayer {
         case capabilities
         case details
         case discoveredDetails
+        case urgentStatistics
+    }
+
+    /// Alternates low-frequency health and capability reads so neither can
+    /// starve the other while the single-active/single-pending gate stays bounded.
+    struct PlaybackPeriodicRefreshScheduler {
+        private var lastRequest: TimeInterval = 0
+        private var nextKind: PlaybackSnapshotKind = .statistics
+
+        mutating func reset() {
+            lastRequest = 0
+            nextKind = .statistics
+        }
+
+        mutating func request(
+            now: TimeInterval,
+            interval: TimeInterval
+        ) -> PlaybackSnapshotKind? {
+            guard now - lastRequest >= interval else { return nil }
+            lastRequest = now
+            let requested = nextKind
+            nextKind = requested == .statistics ? .capabilities : .statistics
+            return requested
+        }
     }
 
     /// Coalesces refresh pressure to one active read plus at most one pending read.
@@ -282,19 +306,26 @@ public extension VLCVideoPlayer {
     struct PlaybackPlayingGate {
         private var generation: UInt64?
         private var epochBaselineTicks: Int32?
+        private var previousTicks: Int32?
         private var hasPublished = false
         private let discontinuityThreshold: Int32 = 2_000
 
         mutating func reset(generation: UInt64) {
             self.generation = generation
             epochBaselineTicks = nil
+            previousTicks = nil
             hasPublished = false
         }
 
         mutating func noteNonPlaying(generation: UInt64) {
             guard self.generation == generation else { return }
             epochBaselineTicks = nil
+            previousTicks = nil
             hasPublished = false
+        }
+
+        mutating func noteSeek(generation: UInt64) {
+            noteNonPlaying(generation: generation)
         }
 
         mutating func observeTime(
@@ -306,10 +337,17 @@ public extension VLCVideoPlayer {
             guard self.generation == generation else { return false }
             guard isActuallyPlaying, detailsReady else {
                 epochBaselineTicks = nil
+                previousTicks = nil
                 hasPublished = false
                 return false
             }
             guard !hasPublished else { return false }
+            if let previousTicks, ticks < previousTicks {
+                epochBaselineTicks = ticks
+                self.previousTicks = ticks
+                return false
+            }
+            previousTicks = ticks
             guard let baseline = epochBaselineTicks else {
                 epochBaselineTicks = ticks
                 return false

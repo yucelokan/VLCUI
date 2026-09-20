@@ -50,6 +50,14 @@ final class PlaybackInformationCacheTests: XCTestCase {
         XCTAssertEqual(gate.complete(generation: 11), .details)
     }
 
+    func testPeriodicRefreshSchedulerAlternatesStatisticsAndCapabilities() {
+        var scheduler = VLCVideoPlayer.PlaybackPeriodicRefreshScheduler()
+        XCTAssertEqual(scheduler.request(now: 1, interval: 0.5), .statistics)
+        XCTAssertNil(scheduler.request(now: 1.2, interval: 0.5))
+        XCTAssertEqual(scheduler.request(now: 1.5, interval: 0.5), .capabilities)
+        XCTAssertEqual(scheduler.request(now: 2, interval: 0.5), .statistics)
+    }
+
     func testProcessWideGenerationIsUniqueAcrossReplacementViews() {
         let first = VLCVideoPlayer.PlaybackSessionGeneration.make()
         let replacement = VLCVideoPlayer.PlaybackSessionGeneration.make()
@@ -103,6 +111,47 @@ final class PlaybackInformationCacheTests: XCTestCase {
         XCTAssertFalse(gate.observeTime(ticks: 20_000, generation: 31, isActuallyPlaying: true, detailsReady: true))
         XCTAssertFalse(gate.observeTime(ticks: 20_100, generation: 31, isActuallyPlaying: true, detailsReady: true))
         XCTAssertTrue(gate.observeTime(ticks: 20_200, generation: 31, isActuallyPlaying: true, detailsReady: true))
+    }
+
+    func testPlayingGateExplicitShortForwardSeekRequiresNewProgress() {
+        var gate = VLCVideoPlayer.PlaybackPlayingGate()
+        gate.reset(generation: 32)
+        XCTAssertFalse(gate.observeTime(ticks: 1_000, generation: 32, isActuallyPlaying: true, detailsReady: true))
+        XCTAssertFalse(gate.observeTime(ticks: 1_100, generation: 32, isActuallyPlaying: true, detailsReady: true))
+        gate.noteSeek(generation: 32)
+        XCTAssertFalse(gate.observeTime(ticks: 1_500, generation: 32, isActuallyPlaying: true, detailsReady: true))
+        XCTAssertFalse(gate.observeTime(ticks: 1_600, generation: 32, isActuallyPlaying: true, detailsReady: true))
+        XCTAssertTrue(gate.observeTime(ticks: 1_700, generation: 32, isActuallyPlaying: true, detailsReady: true))
+    }
+
+    func testPlayingGateBackwardJumpAboveOldBaselineStartsNewEpoch() {
+        var gate = VLCVideoPlayer.PlaybackPlayingGate()
+        gate.reset(generation: 33)
+        XCTAssertFalse(gate.observeTime(ticks: 1_000, generation: 33, isActuallyPlaying: true, detailsReady: true))
+        XCTAssertFalse(gate.observeTime(ticks: 1_100, generation: 33, isActuallyPlaying: true, detailsReady: true))
+        XCTAssertFalse(gate.observeTime(ticks: 1_050, generation: 33, isActuallyPlaying: true, detailsReady: true))
+        XCTAssertFalse(gate.observeTime(ticks: 1_150, generation: 33, isActuallyPlaying: true, detailsReady: true))
+        XCTAssertTrue(gate.observeTime(ticks: 1_250, generation: 33, isActuallyPlaying: true, detailsReady: true))
+    }
+
+    @MainActor
+    func testStatisticsRefreshPublishesCompletedSampleWithoutTimeCallback() async {
+        let published = expectation(description: "Completed statistics sample published")
+        let view = UIVLCVideoPlayerView(
+            configuration: .init(
+                url: URL(fileURLWithPath: "/nonexistent-statistics-fixture.mp4"),
+                autoPlay: false
+            ),
+            proxy: nil,
+            onTicksUpdated: { _, _ in },
+            onStateUpdated: { state, _ in
+                if state == .statisticsChanged { published.fulfill() }
+            },
+            loggingInfo: nil
+        )
+        view.requestStatisticsRefresh()
+        await fulfillment(of: [published], timeout: 1)
+        view.retireCurrentMediaPlayer()
     }
 
     func testPlayingGateCannotPublishFromPausedStateOrStaleGeneration() {
