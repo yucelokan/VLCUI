@@ -44,6 +44,7 @@ public class UIVLCVideoPlayerView: _PlatformView {
     private var lastPlayerState: VLCMediaPlayerState = .opening
     private var startupClock = VLCStartupClock()
     private var startupDiagnosticEpoch: Int?
+    private var playerDiagnosticSession: VLCPlayerDiagnosticSession?
 
     private var aspectFillScale: CGFloat {
         guard let currentMediaPlayer else { return 1 }
@@ -231,13 +232,16 @@ public class UIVLCVideoPlayerView: _PlatformView {
             newMediaPlayer.libraryInstance.debugLoggingTarget = self
         }
 
-        if newConfiguration.startupDiagnosticsEnabled
-            || newConfiguration.startupNetworkObservationEnabled {
-            startupDiagnosticEpoch = VLCStartupDiagnostics.begin(
+        let observesNetworkActivity = newConfiguration.startupDiagnosticsEnabled
+            || newConfiguration.startupNetworkObservationEnabled
+        if observesNetworkActivity || VLCPlaybackDiagnostics.isInstalled {
+            let epoch = VLCStartupDiagnostics.begin(
                 player: newMediaPlayer,
                 url: newConfiguration.url,
                 emitsLogEvents: newConfiguration.startupDiagnosticsEnabled
             )
+            // Host diagnostics must not implicitly enable the recovery snapshot.
+            startupDiagnosticEpoch = observesNetworkActivity ? epoch : nil
         } else {
             startupDiagnosticEpoch = nil
         }
@@ -253,6 +257,7 @@ public class UIVLCVideoPlayerView: _PlatformView {
         lastPlayerTicks = 0
         lastPlayerState = .opening
         startupClock = VLCStartupClock()
+        playerDiagnosticSession = VLCPlaybackDiagnostics.isInstalled ? VLCPlayerDiagnosticSession() : nil
         print("[VLCUI] startup player=\(ObjectIdentifier(newMediaPlayer)) initialVolume=\(newConfiguration.initialVolume.map(String.init) ?? "default")")
 
         if newConfiguration.autoPlay {
@@ -396,6 +401,7 @@ extension UIVLCVideoPlayerView: VLCMediaPlayerDelegate {
         guard player.state != .playing, player.state != lastPlayerState else { return }
 
         let wrappedState = VLCVideoPlayer.State(rawValue: player.state.rawValue) ?? .error
+        if player.state == .error { playerDiagnosticSession?.reportError() }
         let playbackInformation = constructPlaybackInformation(player: player, media: media)
         logStartupMilestones(player: player, info: playbackInformation)
 

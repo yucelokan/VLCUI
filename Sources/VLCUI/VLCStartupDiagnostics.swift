@@ -8,6 +8,7 @@ final class VLCStartupDiagnostics: NSObject, VLCLogging {
     private static let shared = VLCStartupDiagnostics()
     private let lock = NSLock()
     private var budget = VLCStartupDiagnosticBudget()
+    private var observerBudget = VLCStartupDiagnosticBudget()
     private var networkActivity = VLCStartupNetworkActivityTracker()
     private var emitsLogEvents = false
     var level: VLCLogLevel = .debug
@@ -25,6 +26,7 @@ final class VLCStartupDiagnostics: NSObject, VLCLogging {
         }
         shared.lock.lock()
         shared.budget.begin(now: ProcessInfo.processInfo.systemUptime)
+        shared.observerBudget.begin(now: ProcessInfo.processInfo.systemUptime)
         shared.networkActivity = VLCStartupNetworkActivityTracker()
         shared.emitsLogEvents = emitsLogEvents
         let epoch = shared.budget.epoch
@@ -56,7 +58,8 @@ final class VLCStartupDiagnostics: NSObject, VLCLogging {
         // reference, disk/network access, or raw-message retention in this path.
         let now = ProcessInfo.processInfo.systemUptime
         lock.lock()
-        guard budget.isRecording(now: now) else { lock.unlock(); return }
+        let recordsNetworkActivity = budget.isRecording(now: now)
+        guard recordsNetworkActivity || observerBudget.isRecording(now: now) else { lock.unlock(); return }
         let observedEpoch = budget.epoch
         lock.unlock()
         guard let event = VLCStartupDiagnosticPolicy.event(for: message) else { return }
@@ -64,12 +67,18 @@ final class VLCStartupDiagnostics: NSObject, VLCLogging {
         lock.lock()
         // Do not let a classified event race a new startup-window reset.
         let belongsToWindow = budget.epoch == observedEpoch
-        if belongsToWindow {
+        if belongsToWindow && recordsNetworkActivity {
             networkActivity.observe(event: event, now: now)
         }
         let accepted = belongsToWindow && emitsLogEvents
             && budget.accept(event: event, objectID: objectID, now: now)
+        let acceptedForObserver = belongsToWindow && VLCPlaybackDiagnostics.isInstalled
+            && observerBudget.accept(event: event, objectID: objectID, now: now)
         lock.unlock()
+        if acceptedForObserver,
+           let diagnostic = VLCPlaybackDiagnosticEvent.sharedLibrary(event: event, startupWindow: observedEpoch) {
+            VLCPlaybackDiagnostics.emit(diagnostic)
+        }
         guard accepted else { return }
         NSLog("[VLCUI] pipeline epoch=%ld scope=shared_library object=%llu thread=%lu event=%@ uptime_ms=%.0f",
               observedEpoch, UInt64(objectID), context?.threadId ?? 0, event, now * 1000)
