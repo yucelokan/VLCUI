@@ -2,8 +2,8 @@ import Foundation
 import VLCKitSPM
 
 /// Retires VLC players away from the UI thread and reports when the outgoing
-/// player can no longer own an input. VLCKit 3.7.2 maps `stop()` to libVLC's
-/// asynchronous stop API, so returning from that call is not a handover gate.
+/// player can no longer own an input. VLCKit 3.7.4 (as 3.7.2) maps `stop()` to
+/// libVLC's asynchronous stop API, so returning from that call is not a handover gate.
 enum VLCMediaPlayerTeardown {
     private final class Retirement {
         var player: VLCMediaPlayer?

@@ -4,8 +4,8 @@ A [VLCKit](https://code.videolan.org/videolan/VLCKit) wrapper for SwiftUI.
 
 ## Requirements
 
-The `vlc372-new` branch uses the VLCKit 3.7.2 binary distributed by
-[`yucelokan/vlckit-spm`](https://github.com/yucelokan/vlckit-spm/tree/vlc372).
+The `vlc372-new` branch uses the VLCKit 3.7.4 binary (libVLC 3.0.24)
+distributed by [`yucelokan/vlckit-spm`](https://github.com/yucelokan/vlckit-spm/tree/vlc372).
 
 Add this branch with Swift Package Manager:
 

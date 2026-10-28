@@ -101,7 +101,7 @@ public extension VLCVideoPlayer {
         /// Stop the current media.
         ///
         /// - Important: This invokes VLCKit on the calling thread. The linked
-        ///   3.7.2 binary requests an asynchronous libVLC stop; return is not an
+        ///   3.7.4 binary requests an asynchronous libVLC stop; return is not an
         ///   input/socket teardown acknowledgement. Keep `stopAsync()` for UI
         ///   callers so library work stays off-main across supported versions.
         public func stop() {
