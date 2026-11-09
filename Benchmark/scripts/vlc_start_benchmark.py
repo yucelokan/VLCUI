@@ -329,16 +329,33 @@ def framework_info(app):
     return frameworks
 
 
-def app_sizes(app):
-    """The Release device app: bundle, executable, frameworks, and the bundle zipped (close to the download)."""
+def app_sizes(app, arch='arm64'):
+    """The Release device app as built, and thinned to arm64 as the App Store delivers it (the 3.7.4 VLCKit binary also
+    carries armv7 and armv7s): bundle, executable, the largest framework binary, and the bundle zipped (close to the
+    download)."""
     app = Path(app)
     info = plistlib.loads((app / 'Info.plist').read_bytes())
-    with tempfile.TemporaryDirectory(prefix='vlc-start-benchmark-size-') as folder:
-        archive = Path(folder) / 'app.zip'
-        subprocess.run(['ditto', '-c', '-k', '--keepParent', str(app), str(archive)], check=True)
-        zipped = archive.stat().st_size
-    return {'bundle_bytes': tree_bytes(app), 'zipped_bytes': zipped,
-            'executable_bytes': (app / info['CFBundleExecutable']).stat().st_size}
+
+    def measure(bundle):
+        with tempfile.TemporaryDirectory(prefix='vlc-start-benchmark-size-') as folder:
+            archive = Path(folder) / 'app.zip'
+            subprocess.run(['ditto', '-c', '-k', '--keepParent', str(bundle), str(archive)], check=True)
+            zipped = archive.stat().st_size
+        frameworks = framework_info(bundle)
+        return {'bundle_bytes': tree_bytes(bundle), 'zipped_bytes': zipped,
+                'executable_bytes': (bundle / info['CFBundleExecutable']).stat().st_size,
+                'framework_binary_bytes': max((item['binary_bytes'] or 0 for item in frameworks.values()), default=0)}
+
+    with tempfile.TemporaryDirectory(prefix='vlc-start-benchmark-thin-') as folder:
+        thinned = Path(folder) / app.name
+        subprocess.run(['ditto', str(app), str(thinned)], check=True)
+        for file in thinned.rglob('*'):
+            if not file.is_file() or file.is_symlink():
+                continue
+            archs = subprocess.run(['lipo', '-archs', str(file)], capture_output=True, text=True)
+            if archs.returncode == 0 and len(archs.stdout.split()) > 1 and arch in archs.stdout.split():
+                subprocess.run(['lipo', '-thin', arch, '-output', str(file), str(file)], check=True)
+        return {**measure(app), 'thinned': {'arch': arch, **measure(thinned)}}
 
 
 def tool_versions():
@@ -950,24 +967,31 @@ def report(args):
 
 
 def sizes(args):
-    lines = ['platform side      bundle MiB  zipped MiB  VLCKit binary MiB']
-    values = {}
+    """Sizes of the kept Release device apps, measured now: as built, and thinned to arm64 (what the App Store ships)."""
+    mib = 1048576
+    lines = ['platform side     variant   bundle MiB  zipped MiB  VLCKit binary MiB']
+    rows = {}
     for platform in args.platforms:
         for side in args.sides:
             path = build_record_path(side, platform, 'device')
             if not path.exists():
-                raise Refused(f'No {side.label} {platform.key} device build: run `build --device` first')
+                lines.append(f'{platform.key:8} {side.label:8} no device build')
+                continue
             record = json.loads(path.read_text())
-            framework = max(record['frameworks'].values(), key=lambda item: item['binary_bytes'] or 0, default={})
-            values[(platform.key, side.key)] = (record['sizes']['bundle_bytes'], record['sizes']['zipped_bytes'],
-                                                framework.get('binary_bytes') or 0)
-            bundle, zipped, binary = values[(platform.key, side.key)]
-            lines.append(f'{platform.key:8} {side.label:8} {bundle / 1048576:11.1f} {zipped / 1048576:11.1f} {binary / 1048576:18.1f}')
-        old, new = values.get((platform.key, '374')), values.get((platform.key, '400a18'))
+            measured = app_sizes(record['app'])
+            rows[(platform.key, side.key)] = measured
+            for variant, values in (('as built', measured), ('arm64', measured['thinned'])):
+                lines.append(f"{platform.key:8} {side.label:8} {variant:9} {values['bundle_bytes'] / mib:10.1f} "
+                             f"{values['zipped_bytes'] / mib:11.1f} {values['framework_binary_bytes'] / mib:18.1f}")
+        old, new = rows.get((platform.key, '374')), rows.get((platform.key, '400a18'))
         if old and new:
-            lines.append(f'{platform.key:8} {"Δ":8} {(new[0] - old[0]) / 1048576:+11.1f} {(new[1] - old[1]) / 1048576:+11.1f} '
-                         f'{(new[2] - old[2]) / 1048576:+18.1f}')
+            old, new = old['thinned'], new['thinned']
+            lines.append(f"{platform.key:8} {'Δ':8} {'arm64':9} {(new['bundle_bytes'] - old['bundle_bytes']) / mib:+10.1f} "
+                         f"{(new['zipped_bytes'] - old['zipped_bytes']) / mib:+11.1f} "
+                         f"{(new['framework_binary_bytes'] - old['framework_binary_bytes']) / mib:+18.1f}")
     print('\n'.join(lines))
+    if args.json:
+        Path(args.json).write_text(json.dumps({f'{p}-{s}': v for (p, s), v in rows.items()}, indent=2) + '\n')
     return 0
 
 
@@ -983,6 +1007,7 @@ def main(argv=None):
         command.add_argument('--platform', default='ios,tvos')
         command.add_argument('--side', default=','.join(SIDE_ORDER))
     commands.choices['build'].add_argument('--device', action='store_true', help='Release device builds, for the app size')
+    commands.choices['sizes'].add_argument('--json')
     run_command = commands.choices['run']
     run_command.add_argument('--set', default='S1')
     run_command.add_argument('--rounds', type=int, default=20)

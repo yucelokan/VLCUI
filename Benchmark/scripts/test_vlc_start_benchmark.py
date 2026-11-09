@@ -183,6 +183,24 @@ class PinTests(unittest.TestCase):
             self.assertEqual((kept / 'VLCStartBenchmark374').read_text(), 'binary')
             self.assertEqual(kept.parent.name, '374-ios-simulator')
 
+    def test_sizes_thin_a_fat_framework_to_arm64(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app = Path(folder) / 'Bench.app'
+            framework = app / 'Frameworks/Engine.framework'
+            framework.mkdir(parents=True)
+            (app / 'Info.plist').write_bytes(bench.plistlib.dumps({'CFBundleExecutable': 'Bench'}))
+            (app / 'Bench').write_text('x')
+            (framework / 'Info.plist').write_bytes(bench.plistlib.dumps({'CFBundleExecutable': 'Engine'}))
+            source = Path(folder) / 'engine.c'
+            source.write_text('int engine(void) { return 1; }\n')
+            built = subprocess.run(['xcrun', 'clang', '-dynamiclib', '-arch', 'arm64', '-arch', 'x86_64', str(source),
+                                    '-o', str(framework / 'Engine')], capture_output=True)
+            if built.returncode:
+                self.skipTest('no clang for a fat test binary')
+            sizes = bench.app_sizes(app)
+        self.assertLess(sizes['thinned']['framework_binary_bytes'], sizes['framework_binary_bytes'])
+        self.assertLess(sizes['thinned']['bundle_bytes'], sizes['bundle_bytes'])
+
     def test_build_never_touches_a_simulator_and_refuses_inside_the_lock(self):
         with mock.patch.dict(os.environ, {'WUWTV_AGENT_BUILD_LOCK_HELD': '1'}):
             with self.assertRaises(bench.Refused):

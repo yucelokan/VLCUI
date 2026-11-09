@@ -120,7 +120,7 @@ B=Benchmark/scripts/vlc_start_benchmark.py
 
 python3 $B --wuwtv $W build --platform ios        # Release simulator apps, both sides (tvOS: see Limits)
 python3 $B --wuwtv $W build --device              # Release device apps (unsigned), for the size
-python3 $B sizes                                  # bundle, zipped and VLCKit binary size per side, and the delta
+python3 $B sizes                                  # size per side as built and thinned to arm64, and the delta
 
 # One correctness round per side and platform (numbers thrown away):
 $W/scripts/agent_run.sh -- $W/scripts/agent_build.sh locked python3 $B --wuwtv $W run --correctness --platform ios
@@ -138,6 +138,12 @@ python3 $B report ~/Library/Developer/WUWTV-vlc-start-benchmark/<run> --csv samp
 - **Report:** per platform, side and step: n, p50, p90 (nearest rank), min and max of first motion; failures (errors,
   timeouts, no result); stalls; `.playing` p50; steady and peak memory. Then 4.0.0a18 against 3.7.4: Δp50 and Δp90.
 - **Tests:** `python3 -m unittest Benchmark/scripts/test_vlc_start_benchmark.py`.
+
+## App size
+
+`build --device` makes unsigned Release device apps; `sizes` measures each kept app as built and thinned to arm64, which
+is what the App Store ships (the 3.7.4 VLCKit binary also carries armv7 and armv7s; 4.0.0a18 is arm64 only). The
+comparison uses the arm64 numbers: bundle, bundle zipped (close to the download) and the VLCKit binary.
 
 ## Limits
 
