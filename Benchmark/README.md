@@ -24,9 +24,10 @@ revisions and uses only the API they share:
 | --- | --- | --- |
 | Start (L1, M1, E1) | A new player view is requested | First motion |
 | Next (L1 → L2), Previous (L2 → L1) | `Proxy.playNewMedia` on the running player, as the app's channel switch | First motion of the new channel |
+| Clock start | the same request | first motion minus the media time reached by then: when the playback clock started |
 | `.playing` | the same request | VLCUI's first `.playing` state |
 | Failure | an attempt with `.error` before first motion, no motion within 20 s, or no result from the app | |
-| Stall | a buffering state (or an error) during the 5 s hold after first motion | |
+| Stall | the engine's buffering state (or an error) during the 5 s hold after first motion | |
 | Memory | `phys_footprint` at the end of the hold (steady) and its peak over the attempt (100 ms samples) | |
 
 - **First motion** is the app's own rule (`NAVLCSessionEngineAdapter.publish`): the first `onSecondsUpdated` callback
@@ -34,11 +35,22 @@ revisions and uses only the API they share:
   `PlaybackInformation.startConfiguration.url`) are never counted.
 - **One clock:** Swift's `ContinuousClock`, read in the callbacks on the main thread. The waiting loop only notices the
   result; it never sets a time.
-- **Compare first motion only.** The two revisions derive `.playing` differently: on 3.7.4 VLCUI reports it once the
-  playhead has moved 200 ms; on 4.0 it also passes libVLC's own playing state through. `.playing` is recorded, not
-  compared. Each sample also records the side's median interval between playhead callbacks
-  (`tick_interval_p50_ms`), because that cadence bounds how early first motion can be seen (3.7.4 skips the first
-  callback; 4.0 throttles them to 100 ms).
+- **Two comparable numbers: first motion and clock start.**
+  - First motion is the app's clock (WUW-37), but it depends on how often a revision reports the playhead. VLCKit 4
+    reports it once a second (`timeChangeUpdateInterval` defaults to 1.0 s), 3.7.4 about every 300 ms (and VLCUI 3.7.4
+    swallows the first callback). So on 4.0 first motion lands up to ~2 s after the clock really started. Each sample
+    records the cadence (`tick_interval_p50_ms`).
+  - Clock start does not depend on that cadence: at first motion the media time says how long the clock has run. It is
+    kept only when plausible (media time at or above zero and not beyond first motion). In the correctness rounds it
+    agreed within a few milliseconds whichever callback it was computed from.
+  - On 4.0, the first playhead value of a live stream is the stream's raw timestamp (hours), then the time restarts
+    near zero. The app's rule (a later callback with a larger time) skips it; it is visible in `first_tick_media_ms`.
+- **`.playing` is recorded, not compared.** On 3.7.4 VLCUI reports it once the playhead has moved 200 ms; on 4.0 it
+  also passes libVLC's own playing state through, before any frame.
+- **States are named the engine's way.** VLCUI's `State` keeps VLCKit 3's order and the 4.0 revision wraps VLCKit 4's
+  state by raw value, but VLCKit 4 numbers its states differently, so VLCUI 4.0 reports buffering as `.ended` and
+  opening as `.buffering`. The host maps each raw value back to the engine's name (`App/Engine.swift`
+  `EngineState`) and counts stalls and errors from that; VLCUI's own names are kept in `vlcui_states`.
 - **The app's default options** (`NAPlayerViewModel.buildCommonVLCOptions` with `NAPlayerSettings.default`, see
   `App/Engine.swift`): `network-caching` 1500, `adaptive-logic` highest, `avcodec-hw` any, `clock-jitter` 0,
   `clock-synchro` 0, freetype subtitles (size 20, Verdana, white, UTF-8), no deinterlace, no aspect ratio. The
@@ -84,8 +96,9 @@ waits 2 s, so libVLC's own start-up is outside every time.
 - **Start condition** for timed runs, recorded with the results: no other holder in the agent queue, and the Mac's CPU
   under 20 % over 30 s with the benchmark device booted. `--start-by` refuses a late start; `--deadline` launches no
   round that could end after it.
-- **CPU:** the run samples the Mac's CPU every 15 s itself (`environment.json` `cpu_during_run`: peak, mean and seconds
-  over 70 %). The `locked` exit line prints the same for the whole lock.
+- **CPU:** the run samples the Mac's CPU every 15 s itself (`environment.json` `cpu_during_run`: peak, mean, seconds
+  over 70 % and the series). The `locked` exit line prints the same for the whole lock. In the correctness rounds the
+  simulator boot reached 86–99 % for about 40 s; playback stayed at 14–32 %.
 
 ## Pinning
 
