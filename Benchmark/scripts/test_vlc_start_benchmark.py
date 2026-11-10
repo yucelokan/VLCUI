@@ -14,6 +14,27 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vlc_start_benchmark as bench  # noqa: E402
 
+_SANDBOX = None
+_PATCHES = []
+
+
+def setUpModule():
+    # No test may write to the real output folder: a failed build there deletes the real build record (on 9 Nov a
+    # test run removed 374-ios-simulator.json and the timed run refused to start).
+    global _SANDBOX
+    _SANDBOX = tempfile.TemporaryDirectory(prefix='vlc-start-benchmark-test-')
+    output = Path(_SANDBOX.name) / 'output'
+    _PATCHES[:] = [mock.patch.object(bench, 'OUTPUT', output), mock.patch.object(bench, 'BUILDS', output / 'builds')]
+    for patch in _PATCHES:
+        patch.start()
+
+
+def tearDownModule():
+    for patch in reversed(_PATCHES):
+        patch.stop()
+    _SANDBOX.cleanup()
+
+
 A, B = bench.SIDES['374'], bench.SIDES['400a18']
 IOS, TVOS = bench.PLATFORMS['ios'], bench.PLATFORMS['tvos']
 PROFILE = {'playlistURL': 'http://example.invalid:8080/get.php?username=user%2Bname&password=p4ss&type=m3u_plus&output=ts'}
@@ -206,6 +227,11 @@ class PinTests(unittest.TestCase):
             with self.assertRaises(bench.Refused):
                 bench.build(mock.Mock(platforms=[IOS], sides=[A], wuwtv=Path('/nonexistent'), device=False))
         calls = []
+        # An older record of this side: a failed build must remove it, and only inside the test sandbox.
+        self.assertTrue(str(bench.BUILDS).startswith(_SANDBOX.name))
+        bench.BUILDS.mkdir(parents=True, exist_ok=True)
+        older = bench.build_record_path(A, IOS, 'simulator')
+        older.write_text('{}')
 
         def fake_call(command, **kwargs):
             calls.append(command)
@@ -217,6 +243,7 @@ class PinTests(unittest.TestCase):
                 mock.patch.object(bench, 'simctl', side_effect=AssertionError('simctl during build')):
             with self.assertRaises(bench.Refused):
                 bench.build(mock.Mock(platforms=[IOS], sides=[A], wuwtv=Path('/w'), device=False))
+        self.assertFalse(older.exists())
         command = calls[0]
         self.assertIn('generic/platform=iOS Simulator', command)
         self.assertIn('-onlyUsePackageVersionsFromResolvedFile', command)
